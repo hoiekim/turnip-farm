@@ -483,8 +483,7 @@ main.admin .btn:disabled {
   cursor: default;
 }
 
-main.admin select,
-main.admin input[type="password"] {
+main.admin select {
   font: inherit;
   color: var(--text);
   background: var(--bg-raised);
@@ -506,24 +505,12 @@ main.admin .dim {
   color: var(--pink-light);
 }
 
-.admin-key {
-  max-width: 520px;
-}
-
-.admin-key label {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.admin-key-row {
+.admin-session {
   display: flex;
-  gap: 8px;
-}
-
-.admin-key-row input {
-  flex: 1;
-  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 8px;
 }
 
 main.admin section ul.source-list {

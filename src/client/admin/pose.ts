@@ -13,12 +13,14 @@ export { CANONICAL_HZ };
 export const MAX_POSE_BYTES = 64 * 1024 * 1024;
 
 /**
- * Keypoints whose confidence is below this are not drawn. MoveNet's
- * reference demos use 0.3; it is a display choice only.
+ * A keypoint is drawn only when its confidence is strictly above this:
+ * the app's own rule (turnip-ios `PoseKeypoint.confidenceThreshold`, used
+ * as `confidence > threshold` by its pose overlays), so the page shows
+ * what the app showed.
  */
 export const CONFIDENCE_FLOOR = 0.3;
 
-/** COCO keypoint pairs drawn as bones (POSE_FORMAT.md §4 indices). */
+/** COCO keypoint pairs drawn as bones (POSE_FORMAT.md §4 indices): the app's `PoseOverlayView.edges`. */
 export const SKELETON_EDGES: readonly (readonly [number, number])[] = [
   [0, 1], [0, 2], [1, 3], [2, 4], // face
   [5, 6], [5, 11], [6, 12], [11, 12], // torso
@@ -85,13 +87,16 @@ export type Skeleton =
   | { gap: true }
   | {
       gap: false;
-      /** One entry per keypoint: its (x, y), or null when below the floor. */
+      /** One entry per keypoint: its (x, y), or null when at or below the floor. */
       points: ({ x: number; y: number } | null)[];
       /** The SKELETON_EDGES whose both ends are drawn. */
       edges: (readonly [number, number])[];
     };
 
 /** What to draw for one frame. */
+// The comparison is in float32, as the app's Swift `Float` one is: the
+// stored confidences are float32, and float32 0.3 is a little above the
+// double 0.3, so a keypoint at exactly the floor would otherwise be drawn.
 export function skeletonAt(pose: Pose, frame: number, floor = CONFIDENCE_FLOOR): Skeleton {
   if (pose.gaps[frame] !== false) return { gap: true };
   const base = frame * TKP1_KEYPOINT_COUNT * 3;
@@ -99,7 +104,7 @@ export function skeletonAt(pose: Pose, frame: number, floor = CONFIDENCE_FLOOR):
   for (let k = 0; k < TKP1_KEYPOINT_COUNT; k++) {
     const confidence = pose.values[base + k * 3 + 2]!;
     points.push(
-      confidence >= floor ? { x: pose.values[base + k * 3]!, y: pose.values[base + k * 3 + 1]! } : null,
+      confidence > Math.fround(floor) ? { x: pose.values[base + k * 3]!, y: pose.values[base + k * 3 + 1]! } : null,
     );
   }
   const edges = SKELETON_EDGES.filter(([a, b]) => points[a] !== null && points[b] !== null);

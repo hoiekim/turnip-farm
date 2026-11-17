@@ -73,15 +73,7 @@ function draw(canvas: HTMLCanvasElement, pose: Pose, frame: number) {
   }
 }
 
-export function PosePlayer({
-  adminKey,
-  source,
-  onKeyRefused,
-}: {
-  adminKey: string;
-  source: AdminSource;
-  onKeyRefused: () => void;
-}) {
+export function PosePlayer({ source, onSignedOut }: { source: AdminSource; onSignedOut: () => void }) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [position, setPosition] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -100,20 +92,20 @@ export function PosePlayer({
     setLoad({ kind: "loading" });
     setPlaying(false);
     seek(0);
-    fetchPoseBlob(adminKey, source.id)
+    fetchPoseBlob(source.id)
       .then(decodePose)
       .then((pose) => {
         if (!cancelled) setLoad({ kind: "ready", pose });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        if (err instanceof AdminError && err.status === 401) onKeyRefused();
+        if (err instanceof AdminError && err.status === 401) onSignedOut();
         setLoad({ kind: "error", message: err instanceof Error ? err.message : "The pose could not be loaded." });
       });
     return () => {
       cancelled = true;
     };
-  }, [adminKey, source.id, onKeyRefused]);
+  }, [source.id, onSignedOut]);
 
   const pose = load.kind === "ready" ? load.pose : null;
   const frameCount = pose?.frameCount ?? 0;

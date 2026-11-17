@@ -1,10 +1,11 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PosePlayer } from "../admin/PosePlayer";
 import {
   AdminError,
   type AdminSource,
+  type AdminSessionInfo,
   type HoldoutFilter,
-  type SourcePage,
+  getSession,
   listSources,
   setHoldout,
   shortId,
@@ -12,10 +13,10 @@ import {
 import { CANONICAL_HZ, formatSeconds } from "../admin/pose";
 
 // The maintainer's holdout page, at /admin (BACKEND_DESIGN.md §1.2.28,
-// §7.3 admin endpoints). Every call carries the admin key, which the
-// endpoints check; this page shows nothing until one is accepted. The key
-// lives in this component's state only, so a reload asks for it again.
-// The page shows no account ids: the endpoints return none.
+// §7.3 admin endpoints). The maintainer signs in through the auth service
+// (§7.1 "Admin"), which leaves an admin session cookie the endpoints
+// check; the page shows nothing until GET /api/admin/session answers.
+// It shows no contributor account ids: the endpoints return none.
 
 const MARK_NOTE =
   "Holdout should be footage of people who never contribute: turnip-ml evaluates on it and never trains on it.";
@@ -26,49 +27,6 @@ const FILTERS: { value: HoldoutFilter; label: string }[] = [
   { value: "false", label: "Not holdout" },
   { value: "true", label: "Holdout only" },
 ];
-
-function KeyForm({ notice, onAccepted }: { notice: string | null; onAccepted: (key: string, holdouts: SourcePage) => void }) {
-  const [key, setKey] = useState("");
-  const [error, setError] = useState<string | null>(notice);
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    const trimmed = key.trim();
-    if (trimmed === "") return;
-    setBusy(true);
-    setError(null);
-    try {
-      onAccepted(trimmed, await listSources(trimmed, "true", null));
-    } catch (err) {
-      if (err instanceof AdminError && err.status === 401) setError("That key was refused.");
-      else if (err instanceof AdminError && err.status === 404)
-        setError("The admin endpoints are off: TURNIP_ADMIN_KEY is not set on the farm.");
-      else setError(err instanceof Error ? err.message : "The farm could not be reached.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form className="admin-key" onSubmit={(e) => void submit(e)}>
-      <label htmlFor="admin-key">Admin key</label>
-      <div className="admin-key-row">
-        <input
-          id="admin-key"
-          type="password"
-          autoComplete="current-password"
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-        />
-        <button className="btn btn-primary" type="submit" disabled={busy}>
-          {busy ? "Checking…" : "Unlock"}
-        </button>
-      </div>
-      {error && <p className="admin-error">{error}</p>}
-    </form>
-  );
-}
 
 function SourceRow({
   source,
@@ -106,6 +64,13 @@ function SourceRow({
       </div>
       <div className="source-meta">
         <span>Registered {new Date(source.created_at).toLocaleString()}</span>
+        {source.ingested && (
+          <span>
+            {source.ingested_at
+              ? `Ingested ${new Date(source.ingested_at).toLocaleString()}`
+              : "Ingested (time not recorded)"}
+          </span>
+        )}
         <span>
           {source.frame_count} frames · {formatSeconds(source.frame_count / CANONICAL_HZ)}
         </span>
@@ -147,14 +112,8 @@ interface Listing {
   message?: string;
 }
 
-function useListing(adminKey: string, filter: HoldoutFilter, onKeyRefused: () => void, initial?: SourcePage) {
-  const [listing, setListing] = useState<Listing>(
-    initial
-      ? { sources: initial.sources, cursor: initial.next_cursor, state: "ready" }
-      : { sources: [], cursor: null, state: "loading" },
-  );
-  // The key check already fetched the first page of an initial listing.
-  const skipFirstLoad = useRef(initial !== undefined);
+function useListing(filter: HoldoutFilter, onSignedOut: () => void) {
+  const [listing, setListing] = useState<Listing>({ sources: [], cursor: null, state: "loading" });
   // A newer load (a filter change, a reload) supersedes one in flight.
   const requestRef = useRef(0);
 
@@ -163,7 +122,7 @@ function useListing(adminKey: string, filter: HoldoutFilter, onKeyRefused: () =>
       const requestId = ++requestRef.current;
       setListing((l) => ({ ...l, state: "loading" }));
       try {
-        const page = await listSources(adminKey, filter, cursor);
+        const page = await listSources(filter, cursor);
         if (requestRef.current !== requestId) return;
         setListing((l) => ({
           sources: cursor === null ? page.sources : [...l.sources, ...page.sources],
@@ -172,18 +131,14 @@ function useListing(adminKey: string, filter: HoldoutFilter, onKeyRefused: () =>
         }));
       } catch (err) {
         if (requestRef.current !== requestId) return;
-        if (err instanceof AdminError && err.status === 401) onKeyRefused();
+        if (err instanceof AdminError && err.status === 401) onSignedOut();
         setListing((l) => ({ ...l, state: "error", message: err instanceof Error ? err.message : "Request failed." }));
       }
     },
-    [adminKey, filter, onKeyRefused],
+    [filter, onSignedOut],
   );
 
   useEffect(() => {
-    if (skipFirstLoad.current) {
-      skipFirstLoad.current = false;
-      return;
-    }
     void load(null);
   }, [load]);
 
@@ -240,17 +195,7 @@ function SourceList({
   );
 }
 
-function Console({
-  adminKey,
-  initialHoldouts,
-  onKeyRefused,
-  onLock,
-}: {
-  adminKey: string;
-  initialHoldouts: SourcePage;
-  onKeyRefused: () => void;
-  onLock: () => void;
-}) {
+function Console({ session, onSignedOut }: { session: AdminSessionInfo; onSignedOut: () => void }) {
   const [filter, setFilter] = useState<HoldoutFilter>("all");
   const [selected, setSelected] = useState<AdminSource | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -259,15 +204,15 @@ function Console({
   useEffect(() => {
     if (selectedId) playerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [selectedId]);
-  const holdouts = useListing(adminKey, "true", onKeyRefused, initialHoldouts);
-  const browse = useListing(adminKey, filter, onKeyRefused);
+  const holdouts = useListing("true", onSignedOut);
+  const browse = useListing(filter, onSignedOut);
 
   const onSetHoldout = async (source: AdminSource, holdout: boolean) => {
     setActionError(null);
     try {
-      await setHoldout(adminKey, source.id, holdout);
+      await setHoldout(source.id, holdout);
     } catch (err) {
-      if (err instanceof AdminError && err.status === 401) onKeyRefused();
+      if (err instanceof AdminError && err.status === 401) onSignedOut();
       setActionError(err instanceof Error ? err.message : "The change failed.");
       return;
     }
@@ -279,11 +224,12 @@ function Console({
 
   return (
     <>
-      <p>
-        <button className="btn btn-ghost" type="button" onClick={onLock}>
-          Lock
+      <form className="admin-session" method="post" action="/auth/logout">
+        <span className="dim">Signed in as {session.username}</span>
+        <button className="btn btn-ghost" type="submit">
+          Sign out
         </button>
-      </p>
+      </form>
       {actionError && <p className="admin-error">{actionError}</p>}
 
       <section>
@@ -303,7 +249,7 @@ function Console({
           <h2>
             Pose <code title={selected.id}>{shortId(selected.id)}</code>
           </h2>
-          <PosePlayer adminKey={adminKey} source={selected} onKeyRefused={onKeyRefused} />
+          <PosePlayer source={selected} onSignedOut={onSignedOut} />
         </section>
       )}
 
@@ -337,9 +283,23 @@ function Console({
   );
 }
 
+// Why /auth/callback sent the browser back without a session (auth/admin.ts).
+const SIGN_IN_FAILURES: Record<string, string> = {
+  failed: "The sign-in didn't complete. Try again.",
+  unavailable: "The sign-in service is unreachable. Try again shortly.",
+  forbidden: "This account doesn't have the admin role on the farm.",
+  mfa_required: "Admin access needs a sign-in with a second factor. Set one up on your account, then sign in again.",
+};
+
+type PageState =
+  | { kind: "checking" }
+  | { kind: "off" }
+  | { kind: "signed-out"; notice: string | null }
+  | { kind: "error"; message: string }
+  | { kind: "signed-in"; session: AdminSessionInfo };
+
 export function AdminPage() {
-  const [session, setSession] = useState<{ key: string; holdouts: SourcePage } | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [state, setState] = useState<PageState>({ kind: "checking" });
 
   useEffect(() => {
     const previous = document.title;
@@ -349,34 +309,42 @@ export function AdminPage() {
     };
   }, []);
 
-  const onKeyRefused = useCallback(() => {
-    setSession(null);
-    setNotice("The admin key was refused. Enter it again.");
+  useEffect(() => {
+    const reason = new URLSearchParams(window.location.search).get("signin");
+    const notice = reason === null ? null : (SIGN_IN_FAILURES[reason] ?? SIGN_IN_FAILURES.failed!);
+    if (reason !== null) window.history.replaceState(null, "", "/admin");
+    getSession()
+      .then((session) => setState({ kind: "signed-in", session }))
+      .catch((err: unknown) => {
+        if (err instanceof AdminError && err.status === 404) setState({ kind: "off" });
+        else if (err instanceof AdminError && err.status === 401) setState({ kind: "signed-out", notice });
+        else setState({ kind: "error", message: err instanceof Error ? err.message : "The farm could not be reached." });
+      });
+  }, []);
+
+  const onSignedOut = useCallback(() => {
+    setState({ kind: "signed-out", notice: "Your admin session ended. Sign in again." });
   }, []);
 
   return (
     <main className="page admin">
       <div className="wrap">
         <h1>Holdouts</h1>
-        <p className="lead">
-          The curated holdout: sources turnip-ml evaluates on and never trains on.
-        </p>
-        {session === null ? (
-          <KeyForm
-            notice={notice}
-            onAccepted={(key, holdouts) => {
-              setNotice(null);
-              setSession({ key, holdouts });
-            }}
-          />
-        ) : (
-          <Console
-            adminKey={session.key}
-            initialHoldouts={session.holdouts}
-            onKeyRefused={onKeyRefused}
-            onLock={() => setSession(null)}
-          />
+        <p className="lead">The curated holdout: sources turnip-ml evaluates on and never trains on.</p>
+        {state.kind === "checking" && <p>Checking your session…</p>}
+        {state.kind === "off" && <p>Admin sign-in isn't configured on this farm (the AUTH_* settings are unset).</p>}
+        {state.kind === "error" && <p className="admin-error">{state.message}</p>}
+        {state.kind === "signed-out" && (
+          <>
+            {state.notice && <p className="admin-error">{state.notice}</p>}
+            <p>
+              <a className="btn btn-primary" href="/auth/login">
+                Sign in
+              </a>
+            </p>
+          </>
         )}
+        {state.kind === "signed-in" && <Console session={state.session} onSignedOut={onSignedOut} />}
       </div>
     </main>
   );

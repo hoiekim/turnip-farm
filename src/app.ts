@@ -27,6 +27,14 @@ import { handlePostReport } from "./reports";
 import { handlePostConsent } from "./consent";
 import { handlePostLabelCandidates } from "./labels";
 import { handleGetAdminSourcePose, handleListAdminSources, handleSetAdminHoldout } from "./admin";
+import {
+  type AdminAuth,
+  handleAdminCallback,
+  handleAdminLogin,
+  handleAdminLogout,
+  handleAdminSession,
+  handleAuthEvents,
+} from "./auth/admin";
 import { errorResponse } from "./errors";
 import { isVideoId } from "./contrib/validate";
 import type { R2Client } from "./r2/client";
@@ -39,7 +47,7 @@ export interface RateLimits {
   ip: TokenBucket;
   /** Per-IP token bucket for the public GET endpoints (§7.2). */
   publicIp: TokenBucket;
-  /** Per-IP token bucket for every /api/admin/* request, checked before the admin key (§7.2). */
+  /** Per-IP token bucket for every /api/admin/* and /auth/* request, before the session check (§7.2). */
   adminIp: TokenBucket;
   /** Proxies, besides loopback, whose X-Forwarded-For the per-IP buckets read through (§7.2). */
   trustedProxies?: readonly ProxyRange[];
@@ -59,8 +67,8 @@ export type AppDeps = SignInDeps & {
   currentDisclosureVersion: number;
   /** HMAC key for label-candidate account hashes (§1.2.25). */
   candidateKey: CryptoKey;
-  /** TURNIP_ADMIN_KEY (§7.1 "Admin"); null or absent turns the admin endpoints off. */
-  adminKey?: string | null;
+  /** The maintainer's sign-in through auth (§7.1 "Admin"); null or absent turns the admin routes off. */
+  adminAuth?: AdminAuth | null;
   /** Page size of GET /api/admin/sources; tests lower it (admin.ts ADMIN_PAGE_LIMIT). */
   adminPageLimit?: number;
 };
@@ -185,6 +193,9 @@ export function createHandler(deps: AppDeps, opts: HandlerOptions = {}): (req: R
       if (method === "POST" && seg.length === 2 && seg[1] === "reports") {
         return handlePostReport(req, deps);
       }
+      if (method === "GET" && seg.length === 3 && seg[1] === "admin" && seg[2] === "session") {
+        return handleAdminSession(req, deps);
+      }
       if (seg[1] === "admin" && seg[2] === "sources") {
         if (method === "GET" && seg.length === 3) return handleListAdminSources(req, deps);
         if (seg.length === 5 && seg[4] === "holdout") {
@@ -196,11 +207,19 @@ export function createHandler(deps: AppDeps, opts: HandlerOptions = {}): (req: R
         }
       }
     }
+    // The maintainer's sign-in through auth (§7.1 "Admin"). Like /api, the
+    // /auth paths never fall through to the web client.
+    if (seg[0] === "auth" && seg.length === 2) {
+      if (method === "GET" && seg[1] === "login") return handleAdminLogin(req, deps);
+      if (method === "GET" && seg[1] === "callback") return handleAdminCallback(req, deps);
+      if (method === "POST" && seg[1] === "logout") return handleAdminLogout(req, deps);
+      if (method === "POST" && seg[1] === "events") return handleAuthEvents(req, deps);
+    }
     // The built web client: any non-API GET serves a file from it, with
     // the SPA fallback to index.html (see serveClientFile). /healthz and
     // /api/* matched above — or 404 in the API shape below — and never
     // reach here, so an unknown /api/* path never serves the SPA shell.
-    if (method === "GET" && seg[0] !== "api" && opts.clientDir !== undefined) {
+    if (method === "GET" && seg[0] !== "api" && seg[0] !== "auth" && opts.clientDir !== undefined) {
       const served = await serveClientFile(opts.clientDir, pathname);
       if (served) return served;
     }
@@ -249,9 +268,14 @@ export function startServer(port: number, deps: AppDeps, opts: HandlerOptions = 
           });
         }
       }
-      // Per-IP limit on the admin endpoints (§7.2), whatever the method,
-      // and before the key is checked, so guessing at it is throttled too.
-      if (pathname === "/api/admin" || pathname.startsWith("/api/admin/")) {
+      // Per-IP limit on the admin endpoints and the sign-in routes (§7.2),
+      // whatever the method, before any session lookup or call to auth.
+      if (
+        pathname === "/api/admin" ||
+        pathname.startsWith("/api/admin/") ||
+        pathname === "/auth" ||
+        pathname.startsWith("/auth/")
+      ) {
         const ip = clientIp();
         if (!deps.limits.adminIp.take(ip)) {
           return errorResponse(429, "RATE_LIMITED", "Too many requests", {

@@ -1,6 +1,6 @@
-// Calls to the admin endpoints (BACKEND_DESIGN.md §7.3). The admin key is
-// passed in by the page, which keeps it in memory only: it is never put in
-// storage, a cookie or the URL.
+// Calls to the admin endpoints (BACKEND_DESIGN.md §7.3). They carry the
+// admin session cookie, which the farm sets after a sign-in through the
+// auth service (§7.1 "Admin"); the page holds no credential of its own.
 
 export interface AdminClip {
   id: string;
@@ -12,6 +12,7 @@ export interface AdminClip {
 export interface AdminSource {
   id: string;
   created_at: string;
+  ingested_at: string | null;
   frame_count: number;
   sample_rate: number;
   ingested: boolean;
@@ -39,14 +40,21 @@ export class AdminError extends Error {
   }
 }
 
-async function call(adminKey: string, method: string, path: string): Promise<Response> {
+export interface AdminSessionInfo {
+  username: string;
+  role: string;
+}
+
+async function call(method: string, path: string): Promise<Response> {
   let res: Response;
   try {
+    // Same-origin requests carry the session cookie; the browser adds the
+    // Origin header the farm checks on writes.
     res = await fetch(path, {
       method,
-      headers: { Authorization: `Bearer ${adminKey}`, Accept: "application/json" },
+      headers: { Accept: "application/json" },
       cache: "no-store",
-      credentials: "omit",
+      credentials: "same-origin",
     });
   } catch {
     throw new AdminError(0, null, "The farm could not be reached.");
@@ -64,19 +72,24 @@ async function call(adminKey: string, method: string, path: string): Promise<Res
   throw new AdminError(res.status, code, message);
 }
 
-export async function listSources(adminKey: string, filter: HoldoutFilter, cursor: string | null): Promise<SourcePage> {
+export async function getSession(): Promise<AdminSessionInfo> {
+  const res = await call("GET", "/api/admin/session");
+  return (await res.json()) as AdminSessionInfo;
+}
+
+export async function listSources(filter: HoldoutFilter, cursor: string | null): Promise<SourcePage> {
   const params = new URLSearchParams({ holdout: filter });
   if (cursor !== null) params.set("cursor", cursor);
-  const res = await call(adminKey, "GET", `/api/admin/sources?${params}`);
+  const res = await call("GET", `/api/admin/sources?${params}`);
   return (await res.json()) as SourcePage;
 }
 
-export async function setHoldout(adminKey: string, sourceId: string, holdout: boolean): Promise<void> {
-  await call(adminKey, holdout ? "PUT" : "DELETE", `/api/admin/sources/${sourceId}/holdout`);
+export async function setHoldout(sourceId: string, holdout: boolean): Promise<void> {
+  await call(holdout ? "PUT" : "DELETE", `/api/admin/sources/${sourceId}/holdout`);
 }
 
-export async function fetchPoseBlob(adminKey: string, sourceId: string): Promise<Uint8Array<ArrayBuffer>> {
-  const res = await call(adminKey, "GET", `/api/admin/sources/${sourceId}/pose`);
+export async function fetchPoseBlob(sourceId: string): Promise<Uint8Array<ArrayBuffer>> {
+  const res = await call("GET", `/api/admin/sources/${sourceId}/pose`);
   return new Uint8Array(await res.arrayBuffer());
 }
 

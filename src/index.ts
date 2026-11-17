@@ -5,6 +5,8 @@ import { createAppleJwtVerifier, createAppleRevoker, createAppleTokenVerifier, c
 import { importRefreshTokenKey } from "./auth/tokens";
 import { type Config, ConfigError, loadConfig } from "./config";
 import { deleteIdleAccounts } from "./auth/account";
+import { purgeExpiredAdminSessions } from "./auth/admin";
+import { createAuthClient } from "./auth/auth-client";
 import { purgeExpiredAttribution } from "./contrib/purge";
 import { deriveCandidateKey } from "./labels";
 import { R2BlobStore } from "./ingest/store";
@@ -47,6 +49,16 @@ const appleCredentials = {
 };
 
 const r2 = createR2Client(config.r2);
+
+// The maintainer's sign-in for /admin through the auth service (§7.1
+// "Admin"); off when the AUTH_* variables are unset. The client checks its
+// options the way config.ts does, so a throw here is a configuration bug.
+const adminAuth = config.adminAuth
+  ? {
+      client: createAuthClient(config.adminAuth),
+      origin: new URL(config.adminAuth.redirectUri).origin,
+    }
+  : null;
 const refreshTokenKey = await importRefreshTokenKey(config.apple.refreshTokenKey);
 const revokeRefreshToken = createAppleRevoker({ credentials: appleCredentials });
 const candidateKey = await deriveCandidateKey(config.apple.refreshTokenKey);
@@ -57,6 +69,7 @@ const candidateKey = await deriveCandidateKey(config.apple.refreshTokenKey);
 // logged, never fatal; the next run retries.
 const retention = async () => {
   await purgeExpiredAttribution(sql).catch((err) => console.error("retention purge failed:", err));
+  await purgeExpiredAdminSessions(sql).catch((err) => console.error("admin session purge failed:", err));
   await deleteIdleAccounts({ sql, r2, refreshTokenKey, revokeRefreshToken, candidateKey })
     .then(({ deleted, failed }) => {
       if (deleted > 0 || failed > 0) console.log(`idle accounts: ${deleted} deleted, ${failed} failed`);
@@ -85,7 +98,7 @@ const server = startServer(config.port, {
   refreshTokenKey,
   r2,
   pipelineKey: config.pipelineKey,
-  adminKey: config.adminKey,
+  adminAuth,
   currentDisclosureVersion: config.currentDisclosureVersion,
   candidateKey,
   limits: {

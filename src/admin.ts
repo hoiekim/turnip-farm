@@ -1,25 +1,20 @@
 // The maintainer's admin endpoints (BACKEND_DESIGN.md §7.1 "Admin", §7.3):
 // browse ingested sources, play one's pose blob, and set or clear the
 // curated-holdout flag (§1.2.28). They back the /admin page of the web
-// client and authenticate with TURNIP_ADMIN_KEY, a key of their own: the
-// pipeline key never opens them, and the admin key never opens the
-// pipeline's endpoints. With no admin key configured, every route here
-// answers 404, as if it did not exist.
+// client and need an admin session, from a sign-in through the auth
+// service (auth/admin.ts). With admin sign-in not configured, every route
+// here answers 404, as if it did not exist.
 //
 // Nothing here returns an account id or anything from source_attribution.
 
-import type { SQL } from "bun";
+import { type AdminAuthDeps, authenticateAdmin } from "./auth/admin";
 import { isVideoId } from "./contrib/validate";
 import { errorResponse } from "./errors";
 import { setHoldout } from "./holdout";
-import { bearerMatches } from "./pipeline";
 import { BlobTooLargeError, MAX_CANONICAL_BLOB_BYTES, type R2Client } from "./r2/client";
 
-export interface AdminDeps {
-  sql: SQL;
+export interface AdminDeps extends AdminAuthDeps {
   r2: R2Client;
-  /** TURNIP_ADMIN_KEY; null or absent turns the admin endpoints off. */
-  adminKey?: string | null;
   /** Page size of GET /api/admin/sources; tests lower it to cross pages cheaply. */
   adminPageLimit?: number;
 }
@@ -30,17 +25,6 @@ export const ADMIN_PAGE_LIMIT = 50;
 const NO_STORE = { "Cache-Control": "no-store" };
 
 const notFound = () => errorResponse(404, "NOT_FOUND", "Not found");
-
-// Null when the request may proceed.
-export function authenticateAdmin(req: Request, adminKey: string | null | undefined): Response | null {
-  if (!adminKey) return notFound();
-  if (!bearerMatches(req, adminKey)) {
-    return errorResponse(401, "UNAUTHENTICATED", "Invalid admin key", {
-      headers: { "WWW-Authenticate": "Bearer" },
-    });
-  }
-  return null;
-}
 
 interface Cursor {
   createdAt: string; // created_at as Postgres formats it, microseconds included
@@ -79,6 +63,7 @@ export interface AdminClip {
 export interface AdminSource {
   id: string;
   created_at: string;
+  ingested_at: string | null;
   frame_count: number;
   sample_rate: number;
   ingested: boolean;
@@ -91,8 +76,8 @@ export interface AdminSource {
 // Newest first, keyset-paged on (created_at, id): sources registered in
 // one transaction share created_at, so id breaks the tie.
 export async function handleListAdminSources(req: Request, deps: AdminDeps): Promise<Response> {
-  const denied = authenticateAdmin(req, deps.adminKey);
-  if (denied) return denied;
+  const session = await authenticateAdmin(req, deps);
+  if (session instanceof Response) return session;
 
   const params = new URL(req.url).searchParams;
   const filter = params.get("holdout") ?? "all";
@@ -120,6 +105,7 @@ export async function handleListAdminSources(req: Request, deps: AdminDeps): Pro
   const rows = (await deps.sql`
     SELECT s.id,
            to_char(s.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_iso,
+           to_char(s.ingested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ingested_at_iso,
            s.frame_count,
            s.sample_rate,
            s.sha256 IS NOT NULL AS ingested,
@@ -145,6 +131,7 @@ export async function handleListAdminSources(req: Request, deps: AdminDeps): Pro
   const sources: AdminSource[] = page.map((r) => ({
     id: r.id as string,
     created_at: r.created_at_iso as string,
+    ingested_at: (r.ingested_at_iso as string | null) ?? null,
     frame_count: r.frame_count as number,
     sample_rate: r.sample_rate as number,
     ingested: r.ingested as boolean,
@@ -167,8 +154,8 @@ export async function handleSetAdminHoldout(
   sourceId: string,
   holdout: boolean,
 ): Promise<Response> {
-  const denied = authenticateAdmin(req, deps.adminKey);
-  if (denied) return denied;
+  const session = await authenticateAdmin(req, deps);
+  if (session instanceof Response) return session;
   if (!isVideoId(sourceId)) return notFound();
   const result = await setHoldout(deps.sql, sourceId, holdout);
   if (result === "unknown") return notFound();
@@ -186,8 +173,8 @@ export async function handleGetAdminSourcePose(
   deps: AdminDeps,
   sourceId: string,
 ): Promise<Response> {
-  const denied = authenticateAdmin(req, deps.adminKey);
-  if (denied) return denied;
+  const session = await authenticateAdmin(req, deps);
+  if (session instanceof Response) return session;
   if (!isVideoId(sourceId)) return notFound();
   const [source] = await deps.sql`SELECT r2_key, sha256 FROM sources WHERE id = ${sourceId}`;
   if (!source) return notFound();

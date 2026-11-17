@@ -1,5 +1,5 @@
-// Admin endpoints (BACKEND_DESIGN.md §7.1 "Admin", §7.3): the key gate,
-// its rate limit, the source list's paging and filter, the holdout flag,
+// Admin endpoints (BACKEND_DESIGN.md §7.1 "Admin", §7.3): the session
+// gate, its rate limit, the source list's paging and filter, the holdout flag,
 // and the pose blob. DB tests run only when TEST_DATABASE_URL names a
 // database, each in a rolled-back transaction (db/testing.ts).
 
@@ -7,6 +7,7 @@ import { SQL, type TransactionSQL } from "bun";
 import { afterAll, describe, expect, test } from "bun:test";
 import { TEST_DATABASE_URL, inRollback } from "../db/testing";
 import { type AppDeps, createHandler, startServer } from "./app";
+import { fakeAdminAuth, seedAdminSession } from "./auth/admin-testing";
 import { noDatabase, testCandidateKey } from "./auth/testing";
 import { sha256Hex } from "./auth/tokens";
 import { BlobTooLargeError, MAX_CANONICAL_BLOB_BYTES, type R2Client } from "./r2/client";
@@ -18,10 +19,11 @@ afterAll(async () => {
   await sharedSql?.end();
 });
 
-// Test-only stand-ins, not secrets.
-const ADMIN_KEY = ["admin", "key", "for", "tests", "only", "0123456789"].join("-");
+// Test-only stand-in, not a secret.
 const PIPELINE_KEY = ["pipeline", "key", "for", "tests"].join("-");
-const asAdmin = { authorization: `Bearer ${ADMIN_KEY}` };
+
+// A signed-in admin's cookie, with the farm's Origin so writes pass too.
+const adminHeaders = async (tx: TransactionSQL) => (await seedAdminSession(tx)).writeHeaders;
 
 const noR2: R2Client = {
   presignPut: () => {
@@ -47,7 +49,7 @@ const baseDeps: AppDeps = {
   refreshTokenKey: {} as CryptoKey,
   r2: noR2,
   pipelineKey: PIPELINE_KEY,
-  adminKey: ADMIN_KEY,
+  adminAuth: fakeAdminAuth(),
   currentDisclosureVersion: 3,
   candidateKey: testCandidateKey,
   limits: {
@@ -76,41 +78,30 @@ const ADMIN_ROUTES: [string, string][] = [
 describe("admin gate", () => {
   // sql and r2 throw if reached: a refused request must touch neither.
   for (const [method, path] of ADMIN_ROUTES) {
-    test(`${method} ${path}: 404 when no admin key is configured`, async () => {
-      for (const adminKey of [null, undefined, ""]) {
-        const handle = createHandler({ ...baseDeps, adminKey });
-        const res = await handle(req(method, path, asAdmin));
+    test(`${method} ${path}: 404 when admin sign-in isn't configured`, async () => {
+      for (const adminAuth of [null, undefined]) {
+        const handle = createHandler({ ...baseDeps, adminAuth });
+        const res = await handle(req(method, path, { cookie: "__Host-turnip-admin=x", origin: "https://farm.test" }));
         expect(res.status).toBe(404);
         expect(((await res.json()) as any).error.code).toBe("NOT_FOUND");
       }
     });
 
-    test(`${method} ${path}: 401 without the admin key`, async () => {
+    test(`${method} ${path}: 401 without an admin session cookie`, async () => {
       const handle = createHandler(baseDeps);
       const refused: Record<string, string>[] = [
-        {},
-        { authorization: `Bearer ${PIPELINE_KEY}` },
-        { authorization: `Bearer ${ADMIN_KEY}x` },
-        { authorization: `Bearer ${ADMIN_KEY.slice(0, -1)}` },
-        { authorization: ADMIN_KEY },
-        { authorization: `Basic ${ADMIN_KEY}` },
+        { origin: "https://farm.test" },
+        { origin: "https://farm.test", authorization: `Bearer ${PIPELINE_KEY}` },
+        { origin: "https://farm.test", cookie: "__Host-turnip-admin=" },
+        { origin: "https://farm.test", cookie: "turnip-admin=" + "a".repeat(43) },
       ];
       for (const headers of refused) {
         const res = await handle(req(method, path, headers));
         expect(res.status).toBe(401);
-        expect(res.headers.get("WWW-Authenticate")).toBe("Bearer");
         expect(((await res.json()) as any).error.code).toBe("UNAUTHENTICATED");
       }
     });
   }
-
-  test("the admin key does not open the pipeline's endpoints", async () => {
-    const handle = createHandler(baseDeps);
-    const res = await handle(req("GET", "/api/labels/export", asAdmin));
-    expect(res.status).toBe(401);
-    const quarantine = await handle(req("POST", `/api/quarantine/${SOURCE}/release`, asAdmin));
-    expect(quarantine.status).toBe(401);
-  });
 
   test("an unknown admin path or method is a JSON 404, never the SPA shell", async () => {
     const handle = createHandler(baseDeps, { clientDir: "/nonexistent" });
@@ -120,25 +111,27 @@ describe("admin gate", () => {
       ["POST", `/api/admin/sources/${SOURCE}/holdout`],
       ["GET", "/api/admin"],
     ] as const) {
-      const res = await handle(req(method, path, asAdmin));
+      const res = await handle(req(method, path, { origin: "https://farm.test" }));
       expect(res.status).toBe(404);
       expect(((await res.json()) as any).error.code).toBe("NOT_FOUND");
     }
   });
 
-  test("admin requests are per-IP rate limited before the key is checked", async () => {
+  test("admin and sign-in requests are per-IP rate limited before the session check", async () => {
     const server = startServer(0, {
       ...baseDeps,
-      limits: { ...baseDeps.limits, adminIp: new TokenBucket(2, 1) },
+      limits: { ...baseDeps.limits, adminIp: new TokenBucket(3, 1) },
     });
     try {
       const url = new URL("/api/admin/sources", server.url);
       expect((await fetch(url)).status).toBe(401);
       expect((await fetch(url, { method: "PUT" })).status).toBe(404);
-      const res = await fetch(url, { headers: asAdmin });
+      expect((await fetch(new URL("/auth/login", server.url), { redirect: "manual" })).status).toBe(302);
+      const res = await fetch(url);
       expect(res.status).toBe(429);
       expect(((await res.json()) as any).error.code).toBe("RATE_LIMITED");
       expect(res.headers.get("Retry-After")).not.toBeNull();
+      expect((await fetch(new URL("/auth/login", server.url), { redirect: "manual" })).status).toBe(429);
       // The public endpoints keep their own bucket.
       expect((await fetch(new URL("/healthz", server.url))).status).toBe(200);
     } finally {
@@ -155,31 +148,36 @@ const PAST = "2026-10-01T00:00:00.000000Z";
 async function seedSource(
   tx: TransactionSQL,
   id: string,
-  opts: { createdAt?: string; ingested?: boolean; holdout?: boolean; frames?: number } = {},
+  opts: { createdAt?: string; ingested?: boolean; ingestedAt?: string; holdout?: boolean; frames?: number } = {},
 ) {
   const sha = opts.ingested === false ? null : sha256Hex(`blob-${id}`);
-  await tx`INSERT INTO sources (id, source_key_hash, frame_count, sample_rate, r2_key, sha256, holdout, created_at, updated_at)
+  await tx`INSERT INTO sources (id, source_key_hash, frame_count, sample_rate, r2_key, sha256, ingested_at, holdout, created_at, updated_at)
     VALUES (${id}, ${sha256Hex(`key-${id}`)}, ${opts.frames ?? 600}, 30, ${`poses/${id}.tkp1.gz`}, ${sha},
-            ${opts.holdout ?? false}, ${opts.createdAt ?? T0}::timestamptz, ${PAST}::timestamptz)`;
+            ${opts.ingestedAt ?? null}::timestamptz, ${opts.holdout ?? false}, ${opts.createdAt ?? T0}::timestamptz,
+            ${PAST}::timestamptz)`;
 }
 
 function dbDeps(tx: TransactionSQL, overrides: Partial<AppDeps> = {}) {
   return createHandler({ ...baseDeps, sql: tx as unknown as SQL, ...overrides });
 }
 
-async function list(handle: (r: Request) => Promise<Response>, query = ""): Promise<any> {
+async function list(handle: (r: Request) => Promise<Response>, asAdmin: Record<string, string>, query = ""): Promise<any> {
   const res = await handle(req("GET", `/api/admin/sources${query}`, asAdmin));
   expect(res.status).toBe(200);
   expect(res.headers.get("Cache-Control")).toBe("no-store");
   return res.json();
 }
 
-async function allPages(handle: (r: Request) => Promise<Response>, filter = "all"): Promise<string[]> {
+async function allPages(
+  handle: (r: Request) => Promise<Response>,
+  asAdmin: Record<string, string>,
+  filter = "all",
+): Promise<string[]> {
   const ids: string[] = [];
   let cursor: string | null = null;
   for (let pages = 0; pages < 20; pages++) {
     const q: string = `?holdout=${filter}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-    const body = await list(handle, q);
+    const body = await list(handle, asAdmin, q);
     ids.push(...body.sources.map((s: { id: string }) => s.id));
     cursor = body.next_cursor;
     if (cursor === null) return ids;
@@ -190,37 +188,40 @@ async function allPages(handle: (r: Request) => Promise<Response>, filter = "all
 describeDb("GET /api/admin/sources", () => {
   test("newest first, paging through created_at ties with a small page", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       // Five sources share T1 to the microsecond (one transaction's now()).
       for (const ch of ["1", "2", "3", "4", "5"]) await seedSource(tx, vid(ch), { createdAt: T1 });
       await seedSource(tx, vid("6"), { createdAt: T0 });
       await seedSource(tx, vid("7"), { createdAt: T2 });
       const handle = dbDeps(tx, { adminPageLimit: 2 });
-      expect(await allPages(handle)).toEqual([vid("7"), vid("5"), vid("4"), vid("3"), vid("2"), vid("1"), vid("6")]);
+      expect(await allPages(handle, asAdmin)).toEqual([vid("7"), vid("5"), vid("4"), vid("3"), vid("2"), vid("1"), vid("6")]);
 
-      const first = await list(handle);
+      const first = await list(handle, asAdmin);
       expect(first.sources).toHaveLength(2);
       expect(first.next_cursor).toBeString();
       // A full last page has no next cursor.
       const exact = dbDeps(tx, { adminPageLimit: 7 });
-      const whole = await list(exact);
+      const whole = await list(exact, asAdmin);
       expect(whole.sources).toHaveLength(7);
       expect(whole.next_cursor).toBeNull();
     }));
 
   test("filters holdout only, non-holdout only, or all", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       await seedSource(tx, vid("1"), { createdAt: T0, holdout: true });
       await seedSource(tx, vid("2"), { createdAt: T1 });
       await seedSource(tx, vid("3"), { createdAt: T2, holdout: true });
       const handle = dbDeps(tx, { adminPageLimit: 1 });
-      expect(await allPages(handle, "true")).toEqual([vid("3"), vid("1")]);
-      expect(await allPages(handle, "false")).toEqual([vid("2")]);
-      expect(await allPages(handle, "all")).toEqual([vid("3"), vid("2"), vid("1")]);
+      expect(await allPages(handle, asAdmin, "true")).toEqual([vid("3"), vid("1")]);
+      expect(await allPages(handle, asAdmin, "false")).toEqual([vid("2")]);
+      expect(await allPages(handle, asAdmin, "all")).toEqual([vid("3"), vid("2"), vid("1")]);
     }));
 
   test("shows the source, its clips and names, and quarantine, and nothing about the account", async () =>
     inRollback(sharedSql, async (tx) => {
-      await seedSource(tx, SOURCE, { frames: 450, holdout: true });
+      const asAdmin = await adminHeaders(tx);
+      await seedSource(tx, SOURCE, { frames: 450, holdout: true, ingestedAt: "2026-11-01T10:05:00.000001Z" });
       await seedSource(tx, vid("b"), { ingested: false, createdAt: T1 });
       const [user] = await tx`INSERT INTO users (id) VALUES ('apple-sub-for-admin-test') RETURNING id`;
       await tx`INSERT INTO source_attribution (source_id, user_id) VALUES (${SOURCE}, ${user!.id})`;
@@ -241,6 +242,7 @@ describeDb("GET /api/admin/sources", () => {
         {
           id: vid("b"),
           created_at: "2026-11-02T10:00:00.000001Z",
+          ingested_at: null,
           frame_count: 600,
           sample_rate: 30,
           ingested: false,
@@ -251,6 +253,7 @@ describeDb("GET /api/admin/sources", () => {
         {
           id: SOURCE,
           created_at: T0,
+          ingested_at: "2026-11-01T10:05:00.000001Z",
           frame_count: 450,
           sample_rate: 30,
           ingested: true,
@@ -267,15 +270,17 @@ describeDb("GET /api/admin/sources", () => {
 
   test("a released quarantine no longer shows", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       await seedSource(tx, SOURCE);
       await tx`INSERT INTO data_quarantine (source_id, reason, resolved_at, resolution)
                VALUES (${SOURCE}, 'regression', now(), 'released')`;
-      const body = await list(dbDeps(tx));
+      const body = await list(dbDeps(tx), asAdmin);
       expect(body.sources[0].quarantined).toBe(false);
     }));
 
   test("rejects a bad filter or cursor", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       const handle = dbDeps(tx);
       for (const [query, field] of [
         ["?holdout=yes", "holdout"],
@@ -301,6 +306,7 @@ async function holdoutState(tx: TransactionSQL, id: string) {
 describeDb("PUT and DELETE /api/admin/sources/:id/holdout", () => {
   test("sets and clears the flag like sources:holdout, moving updated_at only on a change", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       await seedSource(tx, SOURCE);
       await seedSource(tx, vid("b"));
       const handle = dbDeps(tx);
@@ -324,6 +330,7 @@ describeDb("PUT and DELETE /api/admin/sources/:id/holdout", () => {
 
   test("the change reaches the export as holdout on the source's rows", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       await seedSource(tx, SOURCE);
       const [clip] = await tx`INSERT INTO clips (source_id, start_frame, end_frame) VALUES (${SOURCE}, 0, 10) RETURNING id`;
       await tx`INSERT INTO labels (clip_id, trick_name, origin, taxonomy_version) VALUES (${clip!.id}, 'cork', 'typed', 1)`;
@@ -336,6 +343,7 @@ describeDb("PUT and DELETE /api/admin/sources/:id/holdout", () => {
 
   test("404 for an unknown or malformed source id", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       const handle = dbDeps(tx);
       for (const id of [vid("c"), "nope", "A".repeat(64)]) {
         for (const method of ["PUT", "DELETE"]) {
@@ -361,6 +369,7 @@ function fakeR2(getBytes: R2Client["getBytes"]): R2Client & { fetched: string[] 
 describeDb("GET /api/admin/sources/:id/pose", () => {
   test("streams the canonical blob's stored bytes", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       await seedSource(tx, SOURCE);
       const blob = new Uint8Array([0x1f, 0x8b, 8, 0, 1, 2, 3, 250]);
       let cap: number | undefined;
@@ -379,6 +388,7 @@ describeDb("GET /api/admin/sources/:id/pose", () => {
 
   test("422 BLOB_MISSING before ingest, without reading R2", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       await seedSource(tx, SOURCE, { ingested: false });
       const res = await dbDeps(tx)(req("GET", `/api/admin/sources/${SOURCE}/pose`, asAdmin));
       expect(res.status).toBe(422);
@@ -387,6 +397,7 @@ describeDb("GET /api/admin/sources/:id/pose", () => {
 
   test("422 when the blob is gone from R2 or over the cap", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       await seedSource(tx, SOURCE);
       const gone = await dbDeps(tx, { r2: fakeR2(async () => null) })(
         req("GET", `/api/admin/sources/${SOURCE}/pose`, asAdmin),
@@ -405,6 +416,7 @@ describeDb("GET /api/admin/sources/:id/pose", () => {
 
   test("404 for an unknown or malformed source id", async () =>
     inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
       const handle = dbDeps(tx);
       for (const id of [vid("c"), "nope"]) {
         expect((await handle(req("GET", `/api/admin/sources/${id}/pose`, asAdmin))).status).toBe(404);

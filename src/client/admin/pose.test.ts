@@ -53,13 +53,14 @@ describe("decodePose", () => {
 });
 
 describe("skeletonAt", () => {
-  test("hides keypoints below the confidence floor and the bones that touch them", async () => {
+  test("draws only keypoints strictly above the confidence floor, and the bones between them", async () => {
     const pose = await decodePose(
       blob([
         frame({
           5: [0.4, 0.3, 0.9], // left shoulder
-          6: [0.6, 0.3, CONFIDENCE_FLOOR], // right shoulder, exactly at the floor: drawn
-          7: [0.35, 0.45, CONFIDENCE_FLOOR - 0.01], // left elbow, just under: hidden
+          6: [0.6, 0.3, 0.31], // right shoulder, just above: drawn
+          7: [0.35, 0.45, CONFIDENCE_FLOOR], // left elbow, exactly at the floor: hidden, as in the app
+          8: [0.65, 0.45, 0.29], // right elbow, under: hidden
           11: [0.42, 0.6, 0.8], // left hip
         }),
       ]),
@@ -69,6 +70,7 @@ describe("skeletonAt", () => {
     expect(s.points[5]).toEqual({ x: expect.closeTo(0.4, 6), y: expect.closeTo(0.3, 6) });
     expect(s.points[6]).not.toBeNull();
     expect(s.points[7]).toBeNull();
+    expect(s.points[8]).toBeNull();
     expect(s.points.filter((p) => p !== null)).toHaveLength(3);
     expect(s.edges).toEqual([
       [5, 6],

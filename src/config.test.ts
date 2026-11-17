@@ -1,12 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  ConfigError,
-  DEFAULT_DISCLOSURE_VERSION,
-  DEFAULT_PORT,
-  MIN_ADMIN_KEY_LENGTH,
-  REQUIRED_ENV,
-  loadConfig,
-} from "./config";
+import { ConfigError, DEFAULT_DISCLOSURE_VERSION, DEFAULT_PORT, REQUIRED_ENV, loadConfig } from "./config";
 import { parseProxyRange } from "./ratelimit";
 
 const PEM_LINES = ["-----BEGIN PRIVATE KEY-----", "MIGTAgEAMBMGByqGSM49AgEGCCqGSM49", "-----END PRIVATE KEY-----"];
@@ -56,7 +49,7 @@ describe("loadConfig", () => {
         refreshTokenKey: REFRESH_KEY_BYTES,
       },
       pipelineKey: "pipeline-key",
-      adminKey: null,
+      adminAuth: null,
       trustedProxies: [],
       currentDisclosureVersion: DEFAULT_DISCLOSURE_VERSION,
     });
@@ -119,23 +112,60 @@ describe("loadConfig", () => {
     ]);
   });
 
-  test("reads TURNIP_ADMIN_KEY, off when unset or blank", () => {
-    const key = "k".repeat(MIN_ADMIN_KEY_LENGTH);
-    expect(loadConfig({ ...FULL_ENV, TURNIP_ADMIN_KEY: key }).adminKey).toBe(key);
-    expect(loadConfig({ ...FULL_ENV, TURNIP_ADMIN_KEY: `  ${key}  ` }).adminKey).toBe(key);
-    expect(loadConfig({ ...FULL_ENV, TURNIP_ADMIN_KEY: "   " }).adminKey).toBeNull();
-  });
+  describe("admin sign-in (AUTH_*)", () => {
+    const AUTH_ENV = {
+      AUTH_ISSUER: "https://auth.example.com",
+      AUTH_CLIENT_ID: "turnip-farm",
+      AUTH_CLIENT_SECRET: "client-secret",
+      AUTH_REDIRECT_URI: "https://farm.example.com/auth/callback",
+    };
 
-  test("rejects a short, spaced, or pipeline-equal TURNIP_ADMIN_KEY", () => {
-    for (const bad of ["k".repeat(MIN_ADMIN_KEY_LENGTH - 1), `${"k".repeat(16)} ${"k".repeat(16)}`]) {
-      expect(problemsFor({ ...FULL_ENV, TURNIP_ADMIN_KEY: bad })).toEqual([
-        `TURNIP_ADMIN_KEY must be at least ${MIN_ADMIN_KEY_LENGTH} characters with no whitespace (generate with: openssl rand -base64 32)`,
+    test("reads the client, with the optional back channel and audience", () => {
+      expect(loadConfig({ ...FULL_ENV, ...AUTH_ENV }).adminAuth).toEqual({
+        issuer: "https://auth.example.com",
+        clientId: "turnip-farm",
+        clientSecret: "client-secret",
+        redirectUri: "https://farm.example.com/auth/callback",
+      });
+      const full = loadConfig({
+        ...FULL_ENV,
+        ...AUTH_ENV,
+        AUTH_BACKCHANNEL_URL: "http://auth.internal:3000",
+        AUTH_AUDIENCE: "turnip",
+      }).adminAuth;
+      expect(full?.backChannelUrl).toBe("http://auth.internal:3000");
+      expect(full?.audience).toBe("turnip");
+    });
+
+    test("is off when every AUTH_* variable is unset or blank", () => {
+      expect(loadConfig(FULL_ENV).adminAuth).toBeNull();
+      expect(loadConfig({ ...FULL_ENV, AUTH_ISSUER: " ", AUTH_CLIENT_ID: "" }).adminAuth).toBeNull();
+    });
+
+    test("refuses a partial set", () => {
+      expect(problemsFor({ ...FULL_ENV, AUTH_ISSUER: AUTH_ENV.AUTH_ISSUER })).toEqual([
+        "AUTH_CLIENT_ID, AUTH_CLIENT_SECRET, AUTH_REDIRECT_URI must be set with the other AUTH_* variables, or none of them",
       ]);
-    }
-    const shared = "p".repeat(MIN_ADMIN_KEY_LENGTH);
-    expect(problemsFor({ ...FULL_ENV, TURNIP_PIPELINE_KEY: shared, TURNIP_ADMIN_KEY: shared })).toEqual([
-      "TURNIP_ADMIN_KEY must differ from TURNIP_PIPELINE_KEY",
-    ]);
+      expect(problemsFor({ ...FULL_ENV, AUTH_AUDIENCE: "turnip" })).toHaveLength(1);
+    });
+
+    test("refuses a plain-http issuer or a redirect URI that isn't the callback", () => {
+      expect(problemsFor({ ...FULL_ENV, ...AUTH_ENV, AUTH_ISSUER: "http://auth.example.com" })).toEqual([
+        "AUTH_ISSUER must be an https URL (http only for localhost)",
+      ]);
+      for (const uri of ["https://farm.example.com/callback", "http://farm.example.com/auth/callback", "nope"]) {
+        expect(problemsFor({ ...FULL_ENV, ...AUTH_ENV, AUTH_REDIRECT_URI: uri })).toEqual([
+          "AUTH_REDIRECT_URI must be this farm's https URL ending in /auth/callback",
+        ]);
+      }
+      const local = loadConfig({
+        ...FULL_ENV,
+        ...AUTH_ENV,
+        AUTH_ISSUER: "http://localhost:4000",
+        AUTH_REDIRECT_URI: "http://localhost:3000/auth/callback",
+      }).adminAuth;
+      expect(local?.issuer).toBe("http://localhost:4000");
+    });
   });
 
   test("reads TRUSTED_PROXIES, skipping blank entries", () => {
