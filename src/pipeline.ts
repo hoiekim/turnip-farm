@@ -16,14 +16,20 @@ export interface PipelineDeps {
 // Null when the request may proceed. A 401 here means "fix the pipeline
 // key", never "sign in again" — this surface has no users.
 export function authenticatePipeline(req: Request, pipelineKey: string): Response | null {
-  const header = req.headers.get("authorization")?.trim() ?? "";
-  const token = /^Bearer (\S+)$/i.exec(header)?.[1] ?? "";
-  const a = Buffer.from(token, "utf8");
-  const b = Buffer.from(pipelineKey, "utf8");
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+  if (!bearerMatches(req, pipelineKey)) {
     return errorResponse(401, "UNAUTHENTICATED", "Invalid pipeline key", {
       headers: { "WWW-Authenticate": "Bearer" },
     });
   }
   return null;
+}
+
+// True when the request's `Authorization: Bearer <token>` is exactly key,
+// compared in constant time. Shared with the admin key (admin.ts).
+export function bearerMatches(req: Request, key: string): boolean {
+  const header = req.headers.get("authorization")?.trim() ?? "";
+  const token = /^Bearer (\S+)$/i.exec(header)?.[1] ?? "";
+  const a = Buffer.from(token, "utf8");
+  const b = Buffer.from(key, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
 }

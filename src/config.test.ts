@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError, DEFAULT_DISCLOSURE_VERSION, DEFAULT_PORT, REQUIRED_ENV, loadConfig } from "./config";
+import {
+  ConfigError,
+  DEFAULT_DISCLOSURE_VERSION,
+  DEFAULT_PORT,
+  MIN_ADMIN_KEY_LENGTH,
+  REQUIRED_ENV,
+  loadConfig,
+} from "./config";
 import { parseProxyRange } from "./ratelimit";
 
 const PEM_LINES = ["-----BEGIN PRIVATE KEY-----", "MIGTAgEAMBMGByqGSM49AgEGCCqGSM49", "-----END PRIVATE KEY-----"];
@@ -49,6 +56,7 @@ describe("loadConfig", () => {
         refreshTokenKey: REFRESH_KEY_BYTES,
       },
       pipelineKey: "pipeline-key",
+      adminKey: null,
       trustedProxies: [],
       currentDisclosureVersion: DEFAULT_DISCLOSURE_VERSION,
     });
@@ -108,6 +116,25 @@ describe("loadConfig", () => {
   ])("rejects an APPLE_REFRESH_TOKEN_KEY that is %s", (_, key) => {
     expect(problemsFor({ ...FULL_ENV, APPLE_REFRESH_TOKEN_KEY: key })).toEqual([
       "APPLE_REFRESH_TOKEN_KEY must be 32 random bytes, base64-encoded",
+    ]);
+  });
+
+  test("reads TURNIP_ADMIN_KEY, off when unset or blank", () => {
+    const key = "k".repeat(MIN_ADMIN_KEY_LENGTH);
+    expect(loadConfig({ ...FULL_ENV, TURNIP_ADMIN_KEY: key }).adminKey).toBe(key);
+    expect(loadConfig({ ...FULL_ENV, TURNIP_ADMIN_KEY: `  ${key}  ` }).adminKey).toBe(key);
+    expect(loadConfig({ ...FULL_ENV, TURNIP_ADMIN_KEY: "   " }).adminKey).toBeNull();
+  });
+
+  test("rejects a short, spaced, or pipeline-equal TURNIP_ADMIN_KEY", () => {
+    for (const bad of ["k".repeat(MIN_ADMIN_KEY_LENGTH - 1), `${"k".repeat(16)} ${"k".repeat(16)}`]) {
+      expect(problemsFor({ ...FULL_ENV, TURNIP_ADMIN_KEY: bad })).toEqual([
+        `TURNIP_ADMIN_KEY must be at least ${MIN_ADMIN_KEY_LENGTH} characters with no whitespace (generate with: openssl rand -base64 32)`,
+      ]);
+    }
+    const shared = "p".repeat(MIN_ADMIN_KEY_LENGTH);
+    expect(problemsFor({ ...FULL_ENV, TURNIP_PIPELINE_KEY: shared, TURNIP_ADMIN_KEY: shared })).toEqual([
+      "TURNIP_ADMIN_KEY must differ from TURNIP_PIPELINE_KEY",
     ]);
   });
 

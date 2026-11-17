@@ -226,7 +226,8 @@ Two departures from the master plan's label draft follow from this:
     `POST /api/quarantine/:source_id/release` and `/purge` authenticate
     with the pipeline service key — the only non-user credential in the
     system; the maintainer operates the pipeline, so no separate admin
-    auth exists yet. Purge hard-deletes the source (§1.2.3), so a
+    auth exists for them. (The holdout page's endpoints have their own
+    admin key, §1.2.28, §7.1; it does not open these.) Purge hard-deletes the source (§1.2.3), so a
     `resolution='purged'` row never survives on its own: the quarantine
     row cascades with the source it condemned.
 23. **The export page size is a deployment constant, not a parameter.**
@@ -330,9 +331,14 @@ Two departures from the master plan's label draft follow from this:
     sources by id in turnip-ml's own config; with whole recordings back
     in the export (§1.2.24) the farm carries the flag instead, so one
     place says which sources are holdout. `sources.holdout` (default
-    false) is set and cleared only by the maintainer, with
-    `bun run sources:holdout <video_id> [--clear]`; there is no HTTP
-    route, and a contributor can't set it. Changing it moves the
+    false) is set and cleared only by the maintainer, either with
+    `bun run sources:holdout <video_id> [--clear]` or from the web
+    client's `/admin` page, whose admin endpoints (§7.3,
+    `PUT`/`DELETE /api/admin/sources/:id/holdout`) run the same write
+    (`setHoldout` in `src/holdout.ts`). A contributor can't set it: the
+    endpoints take the admin key (§7.1), never a session or a source
+    key. The page also lists sources and plays their pose blobs, so
+    the maintainer can check the footage before flagging it. Changing it moves the
     source's `updated_at`, so the change reaches the export cursor (§6).
     The export carries `holdout` on every row (§7.3), and turnip-ml
     evaluates on those rows and never trains on them. Holdout sources
@@ -439,7 +445,8 @@ CREATE TABLE sources (
   -- (digest of the asset identity).
   holdout         BOOLEAN NOT NULL DEFAULT false,
   -- The maintainer's curated holdout (§1.2.28): exported, evaluated on,
-  -- never trained on. Set only by `bun run sources:holdout`.
+  -- never trained on. Set only by the maintainer: `bun run
+  -- sources:holdout`, or the admin endpoints (§7.3).
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT sources_id_hex  CHECK (id     ~ '^[0-9a-f]{64}$'),
@@ -1017,6 +1024,28 @@ notes that "User sessions are long-lived on device".
 **Pipeline** (`POST /api/models`, `GET /api/labels/export`): pre-shared
 service key, `Authorization: Bearer <TURNIP_PIPELINE_KEY>`.
 
+**Admin** (`/api/admin/*`, §7.3): a second pre-shared key,
+`Authorization: Bearer <TURNIP_ADMIN_KEY>`, for the maintainer's
+holdout page (§1.2.28). It is its own credential, not the pipeline key,
+because the maintainer types it into a browser: a browser is a wider
+exposure than the training job, and the pipeline key publishes models
+to every device (`POST /api/models`). So the pipeline key never opens
+an admin endpoint, and the admin key never opens a pipeline endpoint.
+- **Optional, off by default:** with `TURNIP_ADMIN_KEY` unset, every
+  admin endpoint answers `404 NOT_FOUND`, as an unknown path does.
+  When set it must be at least 32 characters with no whitespace, and
+  differ from `TURNIP_PIPELINE_KEY`; the farm refuses to start
+  otherwise.
+- **Checks:** a missing or wrong key is `401 UNAUTHENTICATED`, compared
+  in constant time like the pipeline key. Admin requests have their own
+  per-IP bucket (§7.2), taken before the key is checked.
+- **In the browser:** the `/admin` page of the web client asks for the
+  key and keeps it in memory only: not in storage, a cookie or a URL,
+  so a reload asks again. The page is served to anyone, like the rest
+  of the site, but holds no data until the endpoints accept the key;
+  hiding the page is not the control. Responses are `Cache-Control:
+  no-store`.
+
 **Apple** (`POST /api/auth/apple/notifications`): no bearer token; the
 body is a JWT signed by Apple, verified as below.
 
@@ -1113,7 +1142,8 @@ for `users.apple_refresh_token`).
   disclosure, §7.3 `POST /api/consent`), `NOT_FOUND`
   (404), `NO_MODEL` (404), `VALIDATION_ERROR` (422), `UNKNOWN_LABEL` (422:
   a label name outside the vocabulary, §1.2.25), `UNSUPPORTED_FORMAT` (422),
-  `BLOB_MISSING` (422), `BLOB_DIGEST_MISMATCH` (422),
+  `BLOB_MISSING` (422), `BLOB_DIGEST_MISMATCH` (422), `BLOB_TOO_LARGE`
+  (422: a stored blob over the farm's read cap),
   `SOURCE_ALREADY_CLAIMED` (409), `VERSION_EXISTS` (409),
   `RATE_LIMITED` (429), `INTERNAL` (500), `APPLE_UNAVAILABLE` (503:
   Apple's token or revocation endpoint is unreachable or answered 5xx;
@@ -1176,7 +1206,8 @@ for `users.apple_refresh_token`).
   `Retry-After`). `POST /api/auth/apple` has no user yet, so it is
   limited per client IP (suggested: 10 requests/minute), and so are
   the three public endpoints (suggested: 30 requests/minute; all are
-  cacheable, see §7.3). The client IP is the socket peer's address,
+  cacheable, see §7.3), and so is every `/api/admin/*` request
+  (60 requests/minute), before its key is checked. The client IP is the socket peer's address,
   with IPv6 limited per /64, unless the peer is a trusted proxy:
   loopback (a reverse proxy on the same host), or an address in the
   optional `TRUSTED_PROXIES` setting, a comma-separated list of
@@ -1941,6 +1972,62 @@ poisoned data is gone entirely rather than merely excluded. R2 is
 deleted before the row (the `DELETE /api/sources/:id` order); if
 either delete throws, the source row survives so the call can be
 retried. `404` when no open quarantine row exists. Response `204`.
+
+#### `GET /api/admin/sources?holdout=&cursor=` — browse sources (admin key)
+
+The holdout page's source list (§1.2.28), newest first. `holdout` is
+`all` (the default), `true` (holdout only) or `false` (not holdout);
+`cursor` is the previous page's `next_cursor`. Pages hold 50 sources
+(a deployment constant, as in §1.2.23), keyset-ordered by
+`(created_at, id)` descending, so sources registered in one
+transaction still page in a total order. A bad `holdout` or `cursor`
+is `422 VALIDATION_ERROR` with `details.field`. Response `200`:
+
+```json
+{
+  "sources": [
+    {
+      "id": "<video_id>",
+      "created_at": "2026-11-02T10:00:00.000001Z",
+      "frame_count": 600,
+      "sample_rate": 30.0,
+      "ingested": true,
+      "holdout": false,
+      "quarantined": false,
+      "clips": [
+        {"id": "<uuid>", "start_frame": 120, "end_frame": 175, "names": ["cork", "gainer"]}
+      ]
+    }
+  ],
+  "next_cursor": "<opaque, or null on the last page>"
+}
+```
+
+`created_at` is the source's registration time; the farm records no
+separate ingest time, and `ingested` says whether the canonical blob is
+stored yet (`sha256` set). `quarantined` is an open quarantine row.
+`clips` is ordered by window; `names` is the clip's distinct label
+names. Nothing here comes from `source_attribution` or names an
+account (§8).
+
+#### `PUT /api/admin/sources/:id/holdout`, `DELETE …` — set or clear the holdout flag (admin key)
+
+`PUT` flags the source as holdout, `DELETE` clears the flag: the same
+write as `bun run sources:holdout` (§1.2.28), so a change moves
+`updated_at` and reaches the export cursor, and setting the state the
+source already has changes nothing. `404` for an unknown source.
+Response `200`: `{"source_id": "<id>", "holdout": true, "changed": true}`.
+
+#### `GET /api/admin/sources/:id/pose` — a source's pose blob (admin key)
+
+The canonical `poses/<id>.tkp1.gz` bytes as stored, `Content-Type:
+application/gzip`, for the page's player to decode (POSE_FORMAT.md).
+The farm reads the blob from R2 and returns it rather than presigning
+a URL: a browser fetch of a presigned R2 URL needs a CORS rule on the
+bucket, which the app's downloads don't, and the farm already reads
+canonical blobs under the `MAX_CANONICAL_BLOB_BYTES` cap. `404` for an
+unknown source; `422 BLOB_MISSING` when the source isn't ingested yet
+or its blob is gone from R2; `422 BLOB_TOO_LARGE` over the cap.
 
 #### `POST /api/reports` — report a bad label/clip
 

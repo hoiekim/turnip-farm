@@ -68,6 +68,7 @@ Keep them in a systemd `EnvironmentFile` (e.g.
 | `APPLE_PRIVATE_KEY` | PKCS#8 PEM of the `.p8` key, on one line with newlines as `\n` (`src/config.ts` decodes them). A literal multiline PEM does NOT work: systemd's `EnvironmentFile` ignores lines without `=`, so only the first line would load — it passes the PKCS#8-header shape check, then `importApplePrivateKey` fails at startup and the service exits 1 |
 | `APPLE_REFRESH_TOKEN_KEY` | 32 random bytes (base64) — the AES-256-GCM key for `users.apple_refresh_token`. Generate with `openssl rand -base64 32` |
 | `TURNIP_PIPELINE_KEY` | Random service key for the pipeline endpoints (`BACKEND_DESIGN.md` §7.1). See §9 for rotation |
+| `TURNIP_ADMIN_KEY` | Optional; the key the `/admin` holdout page sends to the admin endpoints (`BACKEND_DESIGN.md` §7.1, §1.2.28). Unset, the endpoints answer 404. At least 32 characters, no whitespace, different from `TURNIP_PIPELINE_KEY`. See §9 |
 | `PORT` | Optional; defaults to `3000` |
 | `INGEST_POLL_INTERVAL_MS` | Optional; ingest poll interval, defaults to `30000`. `0` disables the poller (e.g. when R2 event notifications drive ingest instead) |
 | `CURRENT_DISCLOSURE_VERSION` | Optional; defaults to `3`. The contribution disclosure version an account must have agreed to (`POST /api/consent`) before contributing (`BACKEND_DESIGN.md` §7.3). Raise it only after the app release with the new wording is live: every account is then asked again on its next contribution |
@@ -206,6 +207,12 @@ starting position.
   other secrets. Rotation: deploy the new value, then update the
   pipeline consumer (turnip-ml's training job) in the same window —
   there is exactly one consumer, so a flag day is acceptable.
+- **Admin key.** Set `TURNIP_ADMIN_KEY` only on a deploy where the
+  maintainer uses the `/admin` holdout page. Generate it with
+  `openssl rand -base64 32`, keep it in `/etc/turnip-farm/env` and in a
+  password manager, and paste it into the page; the page keeps it in
+  memory only. Rotation: change the value and restart the service;
+  nothing else holds it. Removing it turns the admin endpoints off.
 - **Q4 — R2 topology.** Single bucket, 15-minute presigned-URL TTLs
   (see §7).
 - **Q6 — Apple keys.** `APPLE_PRIVATE_KEY` comes from the Apple

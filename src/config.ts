@@ -26,6 +26,9 @@ export interface Config {
   };
   // Service key for the pipeline endpoints (BACKEND_DESIGN.md §7.1).
   pipelineKey: string;
+  // Key for the maintainer's admin endpoints and the /admin page
+  // (BACKEND_DESIGN.md §7.1). Null when unset: the admin endpoints are off.
+  adminKey: string | null;
   // Proxies, besides loopback, whose X-Forwarded-For per-IP rate limits
   // read through (BACKEND_DESIGN.md §7.2). Empty when unset.
   trustedProxies: ProxyRange[];
@@ -50,6 +53,9 @@ export const REQUIRED_ENV = [
 ] as const;
 
 export const DEFAULT_PORT = 3000;
+
+// The shortest TURNIP_ADMIN_KEY accepted: `openssl rand -base64 32` gives 44.
+export const MIN_ADMIN_KEY_LENGTH = 32;
 
 // Default CURRENT_DISCLOSURE_VERSION: the app's disclosure that says
 // attribution is kept until deletion (BACKEND_DESIGN.md §1.2.17).
@@ -104,6 +110,17 @@ export function loadConfig(env: Env): Config {
     }
   }
 
+  const adminKey = env.TURNIP_ADMIN_KEY?.trim() || null;
+  if (adminKey !== null) {
+    if (adminKey.length < MIN_ADMIN_KEY_LENGTH || /\s/.test(adminKey)) {
+      problems.push(
+        `TURNIP_ADMIN_KEY must be at least ${MIN_ADMIN_KEY_LENGTH} characters with no whitespace (generate with: openssl rand -base64 32)`,
+      );
+    } else if (adminKey === required.TURNIP_PIPELINE_KEY?.trim()) {
+      problems.push("TURNIP_ADMIN_KEY must differ from TURNIP_PIPELINE_KEY");
+    }
+  }
+
   const currentDisclosureVersion = parseDisclosureVersion(env.CURRENT_DISCLOSURE_VERSION);
   if (currentDisclosureVersion === null) {
     problems.push(
@@ -138,6 +155,7 @@ export function loadConfig(env: Env): Config {
       refreshTokenKey,
     },
     pipelineKey: required.TURNIP_PIPELINE_KEY,
+    adminKey,
     trustedProxies,
     currentDisclosureVersion,
   };

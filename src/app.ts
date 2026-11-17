@@ -26,6 +26,7 @@ import {
 import { handlePostReport } from "./reports";
 import { handlePostConsent } from "./consent";
 import { handlePostLabelCandidates } from "./labels";
+import { handleGetAdminSourcePose, handleListAdminSources, handleSetAdminHoldout } from "./admin";
 import { errorResponse } from "./errors";
 import { isVideoId } from "./contrib/validate";
 import type { R2Client } from "./r2/client";
@@ -38,6 +39,8 @@ export interface RateLimits {
   ip: TokenBucket;
   /** Per-IP token bucket for the public GET endpoints (§7.2). */
   publicIp: TokenBucket;
+  /** Per-IP token bucket for every /api/admin/* request, checked before the admin key (§7.2). */
+  adminIp: TokenBucket;
   /** Proxies, besides loopback, whose X-Forwarded-For the per-IP buckets read through (§7.2). */
   trustedProxies?: readonly ProxyRange[];
 }
@@ -56,6 +59,10 @@ export type AppDeps = SignInDeps & {
   currentDisclosureVersion: number;
   /** HMAC key for label-candidate account hashes (§1.2.25). */
   candidateKey: CryptoKey;
+  /** TURNIP_ADMIN_KEY (§7.1 "Admin"); null or absent turns the admin endpoints off. */
+  adminKey?: string | null;
+  /** Page size of GET /api/admin/sources; tests lower it (admin.ts ADMIN_PAGE_LIMIT). */
+  adminPageLimit?: number;
 };
 
 export interface HandlerOptions {
@@ -178,6 +185,16 @@ export function createHandler(deps: AppDeps, opts: HandlerOptions = {}): (req: R
       if (method === "POST" && seg.length === 2 && seg[1] === "reports") {
         return handlePostReport(req, deps);
       }
+      if (seg[1] === "admin" && seg[2] === "sources") {
+        if (method === "GET" && seg.length === 3) return handleListAdminSources(req, deps);
+        if (seg.length === 5 && seg[4] === "holdout") {
+          if (method === "PUT") return handleSetAdminHoldout(req, deps, seg[3]!, true);
+          if (method === "DELETE") return handleSetAdminHoldout(req, deps, seg[3]!, false);
+        }
+        if (method === "GET" && seg.length === 5 && seg[4] === "pose") {
+          return handleGetAdminSourcePose(req, deps, seg[3]!);
+        }
+      }
     }
     // The built web client: any non-API GET serves a file from it, with
     // the SPA fallback to index.html (see serveClientFile). /healthz and
@@ -229,6 +246,16 @@ export function startServer(port: number, deps: AppDeps, opts: HandlerOptions = 
         if (!deps.limits.publicIp.take(ip)) {
           return errorResponse(429, "RATE_LIMITED", "Too many requests", {
             headers: { "Retry-After": String(deps.limits.publicIp.retryAfterSec(ip)) },
+          });
+        }
+      }
+      // Per-IP limit on the admin endpoints (§7.2), whatever the method,
+      // and before the key is checked, so guessing at it is throttled too.
+      if (pathname === "/api/admin" || pathname.startsWith("/api/admin/")) {
+        const ip = clientIp();
+        if (!deps.limits.adminIp.take(ip)) {
+          return errorResponse(429, "RATE_LIMITED", "Too many requests", {
+            headers: { "Retry-After": String(deps.limits.adminIp.retryAfterSec(ip)) },
           });
         }
       }
