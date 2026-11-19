@@ -136,9 +136,15 @@ export interface Vocabulary {
   vocabulary: VocabularyEntry[];
 }
 
-export async function listSynonyms(min: number): Promise<SynonymCandidate[]> {
+export interface SynonymList {
+  synonyms: SynonymCandidate[];
+  /** More pairs meet `min` than the list holds: the ones most accounts sent are listed. */
+  truncated: boolean;
+}
+
+export async function listSynonyms(min: number): Promise<SynonymList> {
   const res = await call("GET", `/api/admin/synonyms?${new URLSearchParams({ min: String(min) })}`);
-  return ((await res.json()) as { synonyms: SynonymCandidate[] }).synonyms;
+  return (await res.json()) as SynonymList;
 }
 
 /** Folds the trick `name` names into the trick `sameAs` names, keeping `sameAs`'s canonical. */

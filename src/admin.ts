@@ -20,9 +20,14 @@ export interface AdminDeps extends AdminAuthDeps {
   r2: R2Client;
   /** Page size of GET /api/admin/sources; tests lower it to cross pages cheaply. */
   adminPageLimit?: number;
+  /** Most pairs GET /api/admin/synonyms returns; tests lower it. */
+  adminSynonymLimit?: number;
 }
 
 export const ADMIN_PAGE_LIMIT = 50;
+
+/** Most pairs GET /api/admin/synonyms returns, those most accounts sent (§7.3). */
+export const ADMIN_SYNONYM_LIMIT = 100;
 
 // Admin responses describe sources by id; no shared cache keeps them.
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -207,7 +212,8 @@ export async function handleGetAdminSourcePose(
 }
 
 // GET /api/admin/synonyms?min=N — what `bun run labels:synonyms` lists,
-// with each name's current canonical, for the synonyms page (§1.2.29).
+// with each name's current canonical, for the synonyms page (§1.2.29):
+// at most ADMIN_SYNONYM_LIMIT pairs, `truncated` when more meet `min`.
 export async function handleListAdminSynonyms(req: Request, deps: AdminDeps): Promise<Response> {
   const session = await authenticateAdmin(req, deps);
   if (session instanceof Response) return session;
@@ -217,8 +223,12 @@ export async function handleListAdminSynonyms(req: Request, deps: AdminDeps): Pr
       details: { field: "min" },
     });
   }
-  const synonyms = await listSynonymCandidates(deps.sql, raw === null ? 1 : Number(raw));
-  return Response.json({ synonyms }, { headers: NO_STORE });
+  const limit = deps.adminSynonymLimit ?? ADMIN_SYNONYM_LIMIT;
+  const rows = await listSynonymCandidates(deps.sql, raw === null ? 1 : Number(raw), limit + 1);
+  return Response.json(
+    { synonyms: rows.slice(0, limit), truncated: rows.length > limit },
+    { headers: NO_STORE },
+  );
 }
 
 // POST /api/admin/merges {"name", "same_as"} — the `bun run labels:merge`

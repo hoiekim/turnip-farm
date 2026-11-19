@@ -77,6 +77,8 @@ export type AppDeps = SignInDeps & {
   adminAuth?: AdminAuth | null;
   /** Page size of GET /api/admin/sources; tests lower it (admin.ts ADMIN_PAGE_LIMIT). */
   adminPageLimit?: number;
+  /** Most pairs GET /api/admin/synonyms returns; tests lower it (admin.ts ADMIN_SYNONYM_LIMIT). */
+  adminSynonymLimit?: number;
 };
 
 export interface HandlerOptions {

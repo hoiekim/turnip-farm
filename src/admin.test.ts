@@ -457,6 +457,7 @@ describeDb("GET /api/admin/synonyms", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("Cache-Control")).toBe("no-store");
       const body = (await res.json()) as any;
+      expect(body.truncated).toBe(false);
       expect(body.synonyms).toEqual([
         {
           name: "Cartwheel Full Twist",
@@ -481,6 +482,32 @@ describeDb("GET /api/admin/synonyms", () => {
 
       const min = (await (await handle(req("GET", "/api/admin/synonyms?min=2", asAdmin))).json()) as any;
       expect(min.synonyms.map((p: any) => p.name)).toEqual(["Cartwheel Full Twist"]);
+    }));
+
+  test("caps the list at the pairs most accounts sent, and says when it did", async () =>
+    inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
+      await seedSynonym(tx, "raiz", "cork", "u1");
+      await seedSynonym(tx, "raiz", "cork", "u2");
+      await seedSynonym(tx, "aerial", "gainer", "u1");
+      await seedSynonym(tx, "btwist", "hook", "u1");
+      const handle = dbDeps(tx, { adminSynonymLimit: 2 });
+      const capped = (await (await handle(req("GET", "/api/admin/synonyms", asAdmin))).json()) as any;
+      expect(capped.synonyms.map((p: any) => p.name)).toEqual(["raiz", "aerial"]);
+      expect(capped.truncated).toBe(true);
+      const all = (await (await handle(req("GET", "/api/admin/synonyms?min=2", asAdmin))).json()) as any;
+      expect(all.synonyms.map((p: any) => p.name)).toEqual(["raiz"]);
+      expect(all.truncated).toBe(false);
+    }));
+
+  test("names the canonical a name resolves to as the export does, an older version's included", async () =>
+    inRollback(sharedSql, async (tx) => {
+      const asAdmin = await adminHeaders(tx);
+      await tx`INSERT INTO label_taxonomy (raw, canonical, taxonomy_version)
+        VALUES ('raiz', 'raiz flip', 2), ('raiz', 'raiz', 3)`;
+      await seedSynonym(tx, "raiz flip", "raiz", "u1");
+      const body = (await (await dbDeps(tx)(req("GET", "/api/admin/synonyms", asAdmin))).json()) as any;
+      expect(body.synonyms[0]).toMatchObject({ name_canonical: "raiz flip", same_as_canonical: "raiz" });
     }));
 
   test("rejects a bad min", async () =>

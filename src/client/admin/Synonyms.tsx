@@ -3,6 +3,7 @@ import {
   AdminError,
   type MergeOutcome,
   type SynonymCandidate,
+  type SynonymList,
   type Vocabulary,
   getVocabulary,
   listSynonyms,
@@ -237,7 +238,7 @@ function VocabularyList({ vocabulary }: { vocabulary: Vocabulary }) {
 
 export function SynonymsConsole({ onSignedOut }: { onSignedOut: () => void }) {
   const [min, setMin] = useState(1);
-  const [pairs, setPairs] = useState<Load<SynonymCandidate[]>>({ state: "loading" });
+  const [pairs, setPairs] = useState<Load<SynonymList>>({ state: "loading" });
   const [vocabulary, setVocabulary] = useState<Load<Vocabulary>>({ state: "loading" });
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
@@ -310,10 +311,16 @@ export function SynonymsConsole({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
         {pairs.state === "loading" && <p>Loading…</p>}
         {pairs.state === "error" && <p className="admin-error">{pairs.message}</p>}
-        {pairs.state === "ready" && pairs.data.length === 0 && <p className="dim">No pairs waiting.</p>}
+        {pairs.state === "ready" && pairs.data.synonyms.length === 0 && <p className="dim">No pairs waiting.</p>}
+        {pairs.state === "ready" && pairs.data.truncated && (
+          <p className="dim">
+            Showing the {pairs.data.synonyms.length} pairs the most accounts sent. Raise the minimum to see the pairs more
+            accounts agree on.
+          </p>
+        )}
         {pairs.state === "ready" && (
           <ul className="source-list">
-            {pairs.data.map((pair) => (
+            {pairs.data.synonyms.map((pair) => (
               <PairRow key={`${pair.name.toLowerCase()}\u0000${pair.same_as.toLowerCase()}`} pair={pair} onMerge={onMerge} />
             ))}
           </ul>

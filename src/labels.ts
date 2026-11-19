@@ -299,16 +299,19 @@ export interface SynonymCandidate {
 /**
  * The open synonym candidates (§1.2.29): one per ordered pair,
  * case-insensitively, that at least `min` distinct accounts sent, the
- * pairs most accounts sent first. Counts only, never an account hash.
+ * pairs most accounts sent first, ties in name order. At most `limit` of
+ * them when one is given (null: all). Counts only, never an account hash.
  */
-export async function listSynonymCandidates(sql: SQL, min = 1): Promise<SynonymCandidate[]> {
+export async function listSynonymCandidates(sql: SQL, min = 1, limit: number | null = null): Promise<SynonymCandidate[]> {
+  // LIMIT NULL is no limit.
   const rows = (await sql`
     SELECT min(name) AS name, min(same_as) AS same_as, count(DISTINCT account_hash)::int AS accounts,
            to_char(min(submitted_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS first_submitted_at
     FROM synonym_candidates
     GROUP BY lower(name), lower(same_as)
     HAVING count(DISTINCT account_hash) >= ${min}
-    ORDER BY accounts DESC, lower(name), lower(same_as)`) as Omit<SynonymCandidate, "name_canonical" | "same_as_canonical">[];
+    ORDER BY accounts DESC, lower(name), lower(same_as)
+    LIMIT ${limit}`) as Omit<SynonymCandidate, "name_canonical" | "same_as_canonical">[];
   const mappings = await currentMappings(sql);
   const resolve = resolver(mappings);
   const spelled = new Map(mappings.map((m) => [normalizeName(m.canonical), m.canonical]));
