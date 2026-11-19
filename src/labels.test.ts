@@ -392,6 +392,38 @@ describeDb("POST /api/labels/synonyms", () => {
       expect(rows.map((r: { name: string; same_as: string }) => [r.name, r.same_as])).toEqual([["raiz", "butterfly twist"]]);
     }));
 
+  test("resolves names as the export does: a canonical only an older version names, and odd spellings", async () =>
+    inRollback(sharedSql, async (tx) => {
+      const token = await seedUser(tx, "u1");
+      // "raiz flip" is a canonical only at version 2; "raiz" maps to itself from version 3.
+      await tx`INSERT INTO label_taxonomy (raw, canonical, taxonomy_version)
+        VALUES ('raiz', 'raiz flip', 2), ('raiz', 'raiz', 3), ('Butterfly  Twist', 'btwist', 2), ('btwist', 'btwist', 2)`;
+      const res = await handlePostLabelSynonyms(
+        post("/api/labels/synonyms", synonymsBody(["butterfly twist", "BTwist"], ["raiz flip", "raiz"]), token),
+        deps(tx),
+      );
+      expect(res.status).toBe(202);
+      // butterfly twist and btwist are one trick through a raw spelled with odd spacing; raiz flip
+      // still resolves to itself, as the export's canonical fallback has it, so it is not raiz.
+      const rows = await tx`SELECT name, same_as FROM synonym_candidates`;
+      expect(rows.map((r: { name: string; same_as: string }) => [r.name, r.same_as])).toEqual([["raiz flip", "raiz"]]);
+
+      // A merge into it finds it as a trick, rather than adding it as a new canonical.
+      const at = async (version: number) =>
+        (await tx`SELECT raw, canonical FROM label_taxonomy WHERE taxonomy_version = ${version} ORDER BY raw`).map(
+          (r: { raw: string; canonical: string }) => [r.raw, r.canonical],
+        );
+      expect(await mergeLabelsCli(["gainer", "raiz flip"], tx, capture().io)).toBe(0);
+      expect(await at(4)).toEqual([["gainer", "raiz flip"]]);
+      // Merging it on moves it, and every name now under it, forward.
+      expect(await mergeLabelsCli(["raiz flip", "raiz"], tx, capture().io)).toBe(0);
+      expect(await at(5)).toEqual([
+        ["gainer", "raiz"],
+        ["raiz flip", "raiz"],
+      ]);
+      expect(await mergeLabelsCli(["RAIZ FLIP", "raiz"], tx, capture().io)).toBe(1);
+    }));
+
   test("422 VALIDATION_ERROR on a bad body; 401 without a session", async () =>
     inRollback(sharedSql, async (tx) => {
       const token = await seedUser(tx, "u1");

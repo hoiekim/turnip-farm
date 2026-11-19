@@ -56,22 +56,28 @@ interface Mapping {
 }
 
 /**
- * The vocabulary as it stands: each raw through its greatest-version
- * mapping (§3 "renames resolve forward"), plus each canonical those
- * mappings name that has no raw row of its own, mapped to itself.
+ * The vocabulary as it stands, resolved as the export resolves a label
+ * name (§6, src/export.ts): each normalized raw through its
+ * greatest-version mapping (§3 "renames resolve forward"), and each
+ * normalized canonical at any version that no raw spells, mapped to
+ * itself, as the export's fallback reaches it. One entry per normalized
+ * name, so `resolver` matches `COALESCE(raw_map, canonical_map)`.
  */
 async function currentMappings(sql: SQL): Promise<Mapping[]> {
   const rows = (await sql`
-    SELECT DISTINCT ON (raw) raw, canonical
-    FROM label_taxonomy
-    ORDER BY raw, taxonomy_version DESC`) as Mapping[];
-  const raws = new Set(rows.map((r) => normalizeName(r.raw)));
-  const canonicalOnly = new Map<string, string>();
-  for (const { canonical } of rows) {
-    const key = normalizeName(canonical);
-    if (!raws.has(key)) canonicalOnly.set(key, canonical);
+    SELECT raw, canonical FROM label_taxonomy ORDER BY taxonomy_version DESC, raw`) as Mapping[];
+  const byRaw = new Map<string, Mapping>();
+  const canonicals = new Map<string, string>();
+  for (const row of rows) {
+    const rawKey = normalizeName(row.raw);
+    if (!byRaw.has(rawKey)) byRaw.set(rawKey, row);
+    const canonicalKey = normalizeName(row.canonical);
+    if (!canonicals.has(canonicalKey)) canonicals.set(canonicalKey, row.canonical);
   }
-  return [...rows, ...[...canonicalOnly.values()].map((c) => ({ raw: c, canonical: c }))];
+  const canonicalOnly = [...canonicals]
+    .filter(([key]) => !byRaw.has(key))
+    .map(([, canonical]) => ({ raw: canonical, canonical }));
+  return [...byRaw.values(), ...canonicalOnly];
 }
 
 /** Normalized name → the normalized canonical it resolves to now. */
