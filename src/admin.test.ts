@@ -524,6 +524,10 @@ describeDb("GET /api/admin/synonyms", () => {
       const all = (await (await handle(req("GET", "/api/admin/synonyms?min=2", asAdmin))).json()) as any;
       expect(all.synonyms.map((p: any) => p.name)).toEqual(["raiz"]);
       expect(all.truncated).toBe(false);
+      // Exactly as many pairs as the cap: all listed, nothing left out.
+      const exact = (await (await dbDeps(tx, { adminSynonymLimit: 3 })(req("GET", "/api/admin/synonyms", asAdmin))).json()) as any;
+      expect(exact.synonyms.map((p: any) => p.name)).toEqual(["raiz", "aerial", "btwist"]);
+      expect(exact.truncated).toBe(false);
     }));
 
   test("names the canonical a name resolves to as the export does, an older version's included", async () =>

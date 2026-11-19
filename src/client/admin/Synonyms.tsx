@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AdminError,
   type MergeOutcome,
@@ -250,12 +250,17 @@ export function SynonymsConsole({ onSignedOut }: { onSignedOut: () => void }) {
     [onSignedOut],
   );
 
+  // A newer load (another minimum, a reload after a merge) supersedes one in flight: only the
+  // latest request's reply reaches the list.
+  const pairsRequest = useRef(0);
   const loadPairs = useCallback(async () => {
+    const request = ++pairsRequest.current;
     setPairs({ state: "loading" });
     try {
-      setPairs({ state: "ready", data: await listSynonyms(min) });
+      const data = await listSynonyms(min);
+      if (pairsRequest.current === request) setPairs({ state: "ready", data });
     } catch (err) {
-      setPairs({ state: "error", message: failed(err) });
+      if (pairsRequest.current === request) setPairs({ state: "error", message: failed(err) });
     }
   }, [min, failed]);
 
