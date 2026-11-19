@@ -364,11 +364,15 @@ Two departures from the master plan's label draft follow from this:
     (`LABEL_CANDIDATE_TTL_DAYS`) and with the account; once per account
     and ordered pair, case-insensitively, since which name to keep is
     part of the suggestion. A pair whose two names already resolve to
-    one canonical is skipped. The maintainer reviews pairs with
+    one canonical is skipped. A name resolves as a label's does in the
+    export (§6): its normalized form through the greatest-version raw
+    mapping first, else as a canonical itself, so a canonical with no
+    raw row of its own counts as known. The maintainer reviews pairs with
     `bun run labels:synonyms [--min N]` and applies one with
     `bun run labels:merge <name> <same_as>`, which merges the whole
-    trick `<name>` resolves to into the trick `<same_as>` resolves to at
-    a new `taxonomy_version`, the way a rename resolves forward (§3):
+    trick `<name>` resolves to into the trick `<same_as>` resolves to
+    (each resolved as above) at a new `taxonomy_version`, the way a
+    rename resolves forward (§3):
     every raw resolving to the old canonical, the canonical itself
     included, gets a row pointing at the new one. A `<name>` the
     vocabulary lacks is added under the trick, a `<same_as>` it lacks
@@ -377,7 +381,7 @@ Two departures from the master plan's label draft follow from this:
     `GET /api/taxonomy/current`. The web client's `/admin/synonyms`
     page does both over two admin endpoints (§7.3
     `GET /api/admin/synonyms`, `POST /api/admin/merges`), which run the
-    same list and the same merge as the scripts and need an admin
+    scripts' list, capped, and their merge, and need an admin
     session (§7.1 "Admin"). No pair count applies a merge by itself
     (§9 Q5). Not gated on consent:
     a pair carries two names and nothing about a clip, a source or a
@@ -1142,7 +1146,8 @@ session opens an admin route, and an admin session opens nothing else.
   §7.4); the farm verifies each with the client library and deletes the
   sessions it names (all but an `access.changed` that keeps `admin`),
   so a sign-out elsewhere or a removed role ends access at once.
-- **Writes:** `PUT`, `DELETE` and `POST /auth/logout` need an `Origin`
+- **Writes:** every `/api/admin/*` request but a `GET` or `HEAD` (each
+  `PUT`, `DELETE` and `POST`), and `POST /auth/logout`, need an `Origin`
   header naming the farm's own origin (from `AUTH_REDIRECT_URI`), else
   `403 FORBIDDEN`; with `SameSite=Lax` that keeps another site from
   writing with the maintainer's cookie.
@@ -1736,8 +1741,10 @@ normalized forms (§1.2.25) differ; otherwise `422 VALIDATION_ERROR`
 with `details.field = "synonyms"` (and `details.index` for a bad
 entry).
 
-Behavior: a pair whose two names already resolve to one canonical (each
-raw through its greatest-version mapping, §3) is skipped. Each other
+Behavior: a pair whose two names already resolve to one canonical is
+skipped, each name resolving as a label's does in the export (§6):
+through the greatest-version raw mapping first, else as a canonical
+itself. Each other
 pair is stored with runs of whitespace collapsed to one space, in
 `synonym_candidates` with the caller's `account_hash` (§1.2.25), once
 per account and ordered pair, case-insensitively; resubmitting keeps
@@ -2199,10 +2206,13 @@ or its blob is gone from R2; `422 BLOB_TOO_LARGE` over the cap.
 #### `GET /api/admin/synonyms?min=` — synonym candidates (admin session)
 
 The synonyms page's list (§1.2.29): what `bun run labels:synonyms`
-prints. One entry per ordered pair, case-insensitively, with the number
-of distinct accounts that sent it, most first; `min` (default 1) keeps
-pairs at least that many accounts sent. A bad `min` is
-`422 VALIDATION_ERROR` with `details.field = "min"`. Response `200`:
+prints, capped. One entry per ordered pair, case-insensitively, with the
+number of distinct accounts that sent it, most first; `min` (default 1)
+keeps pairs at least that many accounts sent. At most 100 pairs (a
+deployment constant, as in §1.2.23): those most accounts sent, ties in
+name order. `truncated` says more pairs meet `min`; raising `min` reaches
+the pairs more accounts agree on. A bad `min` is `422 VALIDATION_ERROR`
+with `details.field = "min"`. Response `200`:
 
 ```json
 {
@@ -2215,12 +2225,14 @@ pairs at least that many accounts sent. A bad `min` is
       "same_as_canonical": "cartfull",
       "first_submitted_at": "2026-11-19T10:00:00.000001Z"
     }
-  ]
+  ],
+  "truncated": false
 }
 ```
 
 `name_canonical` and `same_as_canonical` are the canonical each name
-resolves to now (§3), or `null` for a name the vocabulary lacks; a
+resolves to now, resolving as a label's does in the export (§6), or
+`null` for a name the vocabulary lacks; a
 pair something other than a merge has since made one trick, such as a
 `labels:promote`, shows the same canonical on both sides.
 `first_submitted_at` is the earliest `submitted_at` of the pair's rows.

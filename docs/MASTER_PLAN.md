@@ -36,7 +36,8 @@ and 2026-10-15 (4):
    stores only vocabulary names; a typed name the vocabulary lacks
    becomes a candidate that the maintainer can promote
    (`BACKEND_DESIGN.md` §1.2.25). Two names a user marks as one trick
-   become a synonym candidate that the maintainer can merge (§1.2.29).
+   become a synonym candidate that the maintainer can merge
+   (`BACKEND_DESIGN.md` §1.2.29).
 2. **Privacy-first farm: no video, ever.** Clips are never sent to the farm
    as video data. What leaves the device is an opaque video identifier plus
    the pose keypoint sequence. The iOS client matches server-side label data
