@@ -374,8 +374,12 @@ Two departures from the master plan's label draft follow from this:
     vocabulary lacks is added under the trick, a `<same_as>` it lacks
     becomes a canonical of its own, and the label candidates and pairs
     the merge settles are dropped. The app picks the merge up from
-    `GET /api/taxonomy/current`. There is no HTTP admin route, and no
-    pair count applies a merge by itself (§9 Q5). Not gated on consent:
+    `GET /api/taxonomy/current`. The web client's `/admin/synonyms`
+    page does both over two admin endpoints (§7.3
+    `GET /api/admin/synonyms`, `POST /api/admin/merges`), which run the
+    same list and the same merge as the scripts and need an admin
+    session (§7.1 "Admin"). No pair count applies a merge by itself
+    (§9 Q5). Not gated on consent:
     a pair carries two names and nothing about a clip, a source or a
     pose. *(Judgment calls: maintainer-applied rather than automatic at
     a threshold of accounts, and the candidates' 30 days.)*
@@ -2191,6 +2195,66 @@ bucket, which the app's downloads don't, and the farm already reads
 canonical blobs under the `MAX_CANONICAL_BLOB_BYTES` cap. `404` for an
 unknown source; `422 BLOB_MISSING` when the source isn't ingested yet
 or its blob is gone from R2; `422 BLOB_TOO_LARGE` over the cap.
+
+#### `GET /api/admin/synonyms?min=` — synonym candidates (admin session)
+
+The synonyms page's list (§1.2.29): what `bun run labels:synonyms`
+prints. One entry per ordered pair, case-insensitively, with the number
+of distinct accounts that sent it, most first; `min` (default 1) keeps
+pairs at least that many accounts sent. A bad `min` is
+`422 VALIDATION_ERROR` with `details.field = "min"`. Response `200`:
+
+```json
+{
+  "synonyms": [
+    {
+      "name": "cartwheel full twist",
+      "same_as": "cartfull",
+      "accounts": 3,
+      "name_canonical": null,
+      "same_as_canonical": "cartfull",
+      "first_submitted_at": "2026-11-19T10:00:00.000001Z"
+    }
+  ]
+}
+```
+
+`name_canonical` and `same_as_canonical` are the canonical each name
+resolves to now (§3), or `null` for a name the vocabulary lacks; a
+pair something other than a merge has since made one trick, such as a
+`labels:promote`, shows the same canonical on both sides.
+`first_submitted_at` is the earliest `submitted_at` of the pair's rows.
+Counts only: no `account_hash` and no account id (§8).
+
+#### `POST /api/admin/merges` — merge two tricks (admin session)
+
+The same merge as `bun run labels:merge` (§1.2.29), in one transaction.
+Same origin only (§7.1 "Admin"). Request:
+
+```json
+{"name": "cartwheel full twist", "same_as": "cartfull"}
+```
+
+`name` and `same_as` are strings of 1 to 64 characters whose
+normalized forms (§1.2.25) differ; otherwise `422 VALIDATION_ERROR`
+with `details.field`. Either may be outside the vocabulary. Response
+`200`:
+
+```json
+{
+  "merged": true,
+  "name": "cartwheel full twist",
+  "canonical": "cartfull",
+  "taxonomy_version": 8,
+  "remapped": 1,
+  "synonyms_dropped": 2,
+  "candidates_dropped": 1
+}
+```
+
+`canonical` is the trick both names now resolve to. Two names already
+one trick change nothing and answer `{"merged": false, "name": …,
+"canonical": …}`, as setting a holdout flag a source already has does.
 
 #### `POST /api/reports` — report a bad label/clip
 
