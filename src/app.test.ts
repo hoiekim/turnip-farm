@@ -81,6 +81,7 @@ describe("createHandler routing", () => {
     for (const [method, path] of [
       ["POST", "/api/consent"],
       ["POST", "/api/labels/candidates"],
+      ["POST", "/api/labels/synonyms"],
       ["POST", "/api/sources"],
       ["GET", "/api/sources/abc"],
       ["GET", "/api/sources/abc/pose"],
@@ -110,6 +111,7 @@ describe("createHandler routing", () => {
     for (const [method, path] of [
       ["GET", "/api/consent"],
       ["GET", "/api/labels/candidates"],
+      ["GET", "/api/labels/synonyms"],
       ["GET", "/api/sources"],
       ["PUT", "/api/sources/abc"],
       ["GET", "/api/clips"],
