@@ -23,7 +23,7 @@
 import type { SQL } from "bun";
 import { heavyJobs } from "../heavy-jobs";
 import { BlobTooLargeError, MAX_CANONICAL_BLOB_BYTES } from "../r2/client";
-import { type BlobStore, type StoredObject } from "./store";
+import { type BlobStore, R2Error, type StoredObject } from "./store";
 import { canonicalizeStaged, Tkp1Error } from "./tkp1";
 
 // Key conventions: r2_key is pinned by the design doc (§1.2.9); the staging
@@ -197,22 +197,38 @@ export async function pollStagingOnce(deps: IngestDeps): Promise<PollSummary> {
   return summary;
 }
 
+// From this many R2 5xx answers in a row on, the poll failure is logged as an
+// error with R2's whole answer; fewer are one warning each.
+export const R2_5XX_IN_A_ROW_FOR_ERROR = 3;
+
 // The "or poll" trigger: runs pollStagingOnce immediately and
 // then every intervalMs. Returns a stop function for tests and shutdown.
 export function startIngestPoller(deps: IngestDeps, intervalMs: number): () => void {
   // A tick that outlasts the interval is not overlapped: one ingest at a time.
   let polling = false;
+  let r2ServerErrorsInARow = 0;
   const tick = async (): Promise<void> => {
     if (polling) return;
     polling = true;
     try {
       const s = await pollStagingOnce(deps);
+      r2ServerErrorsInARow = 0;
       if (s.checked > 0) {
         console.log(`ingest poll: ${s.ingested} ingested, ${s.failed} failed of ${s.checked} staged`);
       }
       for (const f of s.failures) console.warn(`ingest failed for ${f.sourceId}: ${f.error}`);
     } catch (err) {
-      console.error("ingest poll failed:", err);
+      const r2ServerError = err instanceof R2Error && err.status >= 500;
+      r2ServerErrorsInARow = r2ServerError ? r2ServerErrorsInARow + 1 : 0;
+      if (r2ServerError && r2ServerErrorsInARow < R2_5XX_IN_A_ROW_FOR_ERROR) {
+        // R2 answers the odd 5xx; the next tick lists again.
+        const code = /<Code>([^<]*)<\/Code>/.exec(err.message)?.[1] ?? "no code";
+        console.warn(
+          `ingest poll skipped: R2 ${err.operation} answered HTTP ${err.status} (${code}), next try in ${intervalMs}ms`,
+        );
+      } else {
+        console.error("ingest poll failed:", err);
+      }
     } finally {
       polling = false;
     }
