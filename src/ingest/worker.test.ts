@@ -13,6 +13,7 @@ import {
   ingestStagedSource,
   pollStagingOnce,
   stagingKeyFor,
+  R2_5XX_WARNINGS_BEFORE_ERROR,
   startIngestPoller,
   type IngestDeps,
   type SourceRow,
@@ -381,18 +382,29 @@ describe("startIngestPoller", () => {
     }
   });
 
-  async function logsOfOneFailingTick(failure: Error): Promise<{ warns: string[]; errors: unknown[][] }> {
-    class FailingListingStore extends InMemoryBlobStore {
+  // Runs the poller against a listing that answers with each failure in turn
+  // (then an empty listing), one tick per entry, and returns what each tick logged.
+  async function logsPerTick(failures: (Error | null)[]): Promise<{ warns: string[]; errors: unknown[][] }[]> {
+    let tick = 0;
+    class ScriptedListingStore extends InMemoryBlobStore {
       override async *listPages(_prefix: string): AsyncIterable<string[]> {
-        throw failure;
+        const failure = failures[tick++];
+        if (failure) throw failure;
       }
     }
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     const error = spyOn(console, "error").mockImplementation(() => {});
-    const stop = startIngestPoller({ store: new FailingListingStore(), sources: new FakeSourceStore() }, 60_000);
+    const perTick: { warns: string[]; errors: unknown[][] }[] = [];
+    const stop = startIngestPoller({ store: new ScriptedListingStore(), sources: new FakeSourceStore() }, 25);
     try {
-      await Bun.sleep(20);
-      return { warns: warn.mock.calls.map((call) => call.join(" ")), errors: error.mock.calls };
+      for (let i = 0; i < failures.length; i++) {
+        while (tick <= i) await Bun.sleep(2);
+        await Bun.sleep(5);
+        perTick.push({ warns: warn.mock.calls.map((call) => call.join(" ")), errors: [...error.mock.calls] });
+        warn.mockClear();
+        error.mockClear();
+      }
+      return perTick;
     } finally {
       stop();
       warn.mockRestore();
@@ -400,20 +412,37 @@ describe("startIngestPoller", () => {
     }
   }
 
-  test("an R2 5xx on the listing is one warning line, not an error with a stack", async () => {
-    const xml = '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code></Error>';
-    const { warns, errors } = await logsOfOneFailingTick(new R2Error(500, "LIST", xml));
-    expect(warns).toEqual(["ingest poll skipped: R2 LIST answered HTTP 500, next try in 60000ms"]);
-    expect(errors).toEqual([]);
+  const r2InternalError = (status: number) =>
+    new R2Error(status, "LIST", '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code></Error>');
+
+  test("an R2 5xx on the listing is one warning line with R2's code, not an error with a stack", async () => {
+    for (const status of [500, 503]) {
+      const [only] = await logsPerTick([r2InternalError(status)]);
+      expect(only).toEqual({
+        warns: [`ingest poll skipped: R2 LIST answered HTTP ${status} (InternalError), next try in 25ms`],
+        errors: [],
+      });
+    }
+  });
+
+  test(`R2 5xx answers in a row become an error from the ${R2_5XX_WARNINGS_BEFORE_ERROR}th, and a good poll resets the count`, async () => {
+    const failure = r2InternalError(500);
+    const run = [...Array(R2_5XX_WARNINGS_BEFORE_ERROR).fill(failure), null, failure];
+    const ticks = await logsPerTick(run);
+    const kinds = ticks.map((t) => (t.errors.length ? "error" : t.warns.length ? "warn" : "none"));
+    expect(kinds).toEqual([...Array(R2_5XX_WARNINGS_BEFORE_ERROR - 1).fill("warn"), "error", "none", "warn"]);
+    expect(ticks[R2_5XX_WARNINGS_BEFORE_ERROR - 1]!.errors).toEqual([["ingest poll failed:", failure]]);
   });
 
   test("an R2 4xx and any other failure are still logged as errors, with the error itself", async () => {
-    const denied = new R2Error(403, "LIST", "AccessDenied");
-    const broken = new TypeError("listPages is not a function");
-    for (const failure of [denied, broken]) {
-      const { warns, errors } = await logsOfOneFailingTick(failure);
-      expect(warns).toEqual([]);
-      expect(errors).toEqual([["ingest poll failed:", failure]]);
+    for (const failure of [
+      new R2Error(403, "LIST", "AccessDenied"),
+      new R2Error(404, "LIST", "NoSuchBucket"),
+      new R2Error(429, "LIST", "SlowDown"),
+      new TypeError("listPages is not a function"),
+    ]) {
+      const [only] = await logsPerTick([failure]);
+      expect(only).toEqual({ warns: [], errors: [["ingest poll failed:", failure]] });
     }
   });
 });

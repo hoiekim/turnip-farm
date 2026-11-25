@@ -197,24 +197,35 @@ export async function pollStagingOnce(deps: IngestDeps): Promise<PollSummary> {
   return summary;
 }
 
+// R2 5xx answers in a row that are logged as warnings; from this many on,
+// the poll failure is logged as an error with R2's whole answer.
+export const R2_5XX_WARNINGS_BEFORE_ERROR = 3;
+
 // The "or poll" trigger: runs pollStagingOnce immediately and
 // then every intervalMs. Returns a stop function for tests and shutdown.
 export function startIngestPoller(deps: IngestDeps, intervalMs: number): () => void {
   // A tick that outlasts the interval is not overlapped: one ingest at a time.
   let polling = false;
+  let r2ServerErrorsInARow = 0;
   const tick = async (): Promise<void> => {
     if (polling) return;
     polling = true;
     try {
       const s = await pollStagingOnce(deps);
+      r2ServerErrorsInARow = 0;
       if (s.checked > 0) {
         console.log(`ingest poll: ${s.ingested} ingested, ${s.failed} failed of ${s.checked} staged`);
       }
       for (const f of s.failures) console.warn(`ingest failed for ${f.sourceId}: ${f.error}`);
     } catch (err) {
-      if (err instanceof R2Error && err.status >= 500) {
+      const r2ServerError = err instanceof R2Error && err.status >= 500;
+      r2ServerErrorsInARow = r2ServerError ? r2ServerErrorsInARow + 1 : 0;
+      if (r2ServerError && r2ServerErrorsInARow < R2_5XX_WARNINGS_BEFORE_ERROR) {
         // R2 answers the odd 5xx; the next tick lists again.
-        console.warn(`ingest poll skipped: R2 ${err.operation} answered HTTP ${err.status}, next try in ${intervalMs}ms`);
+        const code = /<Code>([^<]*)<\/Code>/.exec(err.message)?.[1] ?? "no code";
+        console.warn(
+          `ingest poll skipped: R2 ${err.operation} answered HTTP ${err.status} (${code}), next try in ${intervalMs}ms`,
+        );
       } else {
         console.error("ingest poll failed:", err);
       }
