@@ -13,7 +13,7 @@ import {
   ingestStagedSource,
   pollStagingOnce,
   stagingKeyFor,
-  R2_5XX_WARNINGS_BEFORE_ERROR,
+  R2_5XX_IN_A_ROW_FOR_ERROR,
   startIngestPoller,
   type IngestDeps,
   type SourceRow,
@@ -425,13 +425,13 @@ describe("startIngestPoller", () => {
     }
   });
 
-  test(`R2 5xx answers in a row become an error from the ${R2_5XX_WARNINGS_BEFORE_ERROR}th, and a good poll resets the count`, async () => {
+  test(`R2 5xx answers in a row become an error from the ${R2_5XX_IN_A_ROW_FOR_ERROR}th, and a good poll resets the count`, async () => {
     const failure = r2InternalError(500);
-    const run = [...Array(R2_5XX_WARNINGS_BEFORE_ERROR).fill(failure), null, failure];
+    const run = [...Array(R2_5XX_IN_A_ROW_FOR_ERROR).fill(failure), null, failure];
     const ticks = await logsPerTick(run);
     const kinds = ticks.map((t) => (t.errors.length ? "error" : t.warns.length ? "warn" : "none"));
-    expect(kinds).toEqual([...Array(R2_5XX_WARNINGS_BEFORE_ERROR - 1).fill("warn"), "error", "none", "warn"]);
-    expect(ticks[R2_5XX_WARNINGS_BEFORE_ERROR - 1]!.errors).toEqual([["ingest poll failed:", failure]]);
+    expect(kinds).toEqual([...Array(R2_5XX_IN_A_ROW_FOR_ERROR - 1).fill("warn"), "error", "none", "warn"]);
+    expect(ticks[R2_5XX_IN_A_ROW_FOR_ERROR - 1]!.errors).toEqual([["ingest poll failed:", failure]]);
   });
 
   test("an R2 4xx and any other failure are still logged as errors, with the error itself", async () => {

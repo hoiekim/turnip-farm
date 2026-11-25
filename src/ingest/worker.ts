@@ -197,9 +197,9 @@ export async function pollStagingOnce(deps: IngestDeps): Promise<PollSummary> {
   return summary;
 }
 
-// R2 5xx answers in a row that are logged as warnings; from this many on,
-// the poll failure is logged as an error with R2's whole answer.
-export const R2_5XX_WARNINGS_BEFORE_ERROR = 3;
+// From this many R2 5xx answers in a row on, the poll failure is logged as an
+// error with R2's whole answer; fewer are one warning each.
+export const R2_5XX_IN_A_ROW_FOR_ERROR = 3;
 
 // The "or poll" trigger: runs pollStagingOnce immediately and
 // then every intervalMs. Returns a stop function for tests and shutdown.
@@ -220,7 +220,7 @@ export function startIngestPoller(deps: IngestDeps, intervalMs: number): () => v
     } catch (err) {
       const r2ServerError = err instanceof R2Error && err.status >= 500;
       r2ServerErrorsInARow = r2ServerError ? r2ServerErrorsInARow + 1 : 0;
-      if (r2ServerError && r2ServerErrorsInARow < R2_5XX_WARNINGS_BEFORE_ERROR) {
+      if (r2ServerError && r2ServerErrorsInARow < R2_5XX_IN_A_ROW_FOR_ERROR) {
         // R2 answers the odd 5xx; the next tick lists again.
         const code = /<Code>([^<]*)<\/Code>/.exec(err.message)?.[1] ?? "no code";
         console.warn(
