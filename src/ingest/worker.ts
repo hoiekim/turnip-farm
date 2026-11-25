@@ -23,7 +23,7 @@
 import type { SQL } from "bun";
 import { heavyJobs } from "../heavy-jobs";
 import { BlobTooLargeError, MAX_CANONICAL_BLOB_BYTES } from "../r2/client";
-import { type BlobStore, type StoredObject } from "./store";
+import { type BlobStore, R2Error, type StoredObject } from "./store";
 import { canonicalizeStaged, Tkp1Error } from "./tkp1";
 
 // Key conventions: r2_key is pinned by the design doc (§1.2.9); the staging
@@ -212,7 +212,12 @@ export function startIngestPoller(deps: IngestDeps, intervalMs: number): () => v
       }
       for (const f of s.failures) console.warn(`ingest failed for ${f.sourceId}: ${f.error}`);
     } catch (err) {
-      console.error("ingest poll failed:", err);
+      if (err instanceof R2Error && err.status >= 500) {
+        // R2 answers the odd 5xx; the next tick lists again.
+        console.warn(`ingest poll skipped: R2 ${err.operation} answered HTTP ${err.status}, next try in ${intervalMs}ms`);
+      } else {
+        console.error("ingest poll failed:", err);
+      }
     } finally {
       polling = false;
     }

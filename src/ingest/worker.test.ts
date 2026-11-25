@@ -1,10 +1,10 @@
 // Acceptance tests for the ingest worker: the staged
 // upload becomes the canonical blob, or the ingest fails cleanly.
 import { SQL } from "bun";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { BlobTooLargeError } from "../r2/client";
 import { TEST_DATABASE_URL, inRollback } from "../../db/testing";
-import { type BlobStore, type BlobUpload, type StoredObject } from "./store";
+import { type BlobStore, type BlobUpload, R2Error, type StoredObject } from "./store";
 import { decodeTkp1, encodeTkp1 } from "./tkp1";
 import {
   canonicalKeyFor,
@@ -378,6 +378,42 @@ describe("startIngestPoller", () => {
       expect(polls).toBeGreaterThan(1);
     } finally {
       stop();
+    }
+  });
+
+  async function logsOfOneFailingTick(failure: Error): Promise<{ warns: string[]; errors: unknown[][] }> {
+    class FailingListingStore extends InMemoryBlobStore {
+      override async *listPages(_prefix: string): AsyncIterable<string[]> {
+        throw failure;
+      }
+    }
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    const stop = startIngestPoller({ store: new FailingListingStore(), sources: new FakeSourceStore() }, 60_000);
+    try {
+      await Bun.sleep(20);
+      return { warns: warn.mock.calls.map((call) => call.join(" ")), errors: error.mock.calls };
+    } finally {
+      stop();
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  }
+
+  test("an R2 5xx on the listing is one warning line, not an error with a stack", async () => {
+    const xml = '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code></Error>';
+    const { warns, errors } = await logsOfOneFailingTick(new R2Error(500, "LIST", xml));
+    expect(warns).toEqual(["ingest poll skipped: R2 LIST answered HTTP 500, next try in 60000ms"]);
+    expect(errors).toEqual([]);
+  });
+
+  test("an R2 4xx and any other failure are still logged as errors, with the error itself", async () => {
+    const denied = new R2Error(403, "LIST", "AccessDenied");
+    const broken = new TypeError("listPages is not a function");
+    for (const failure of [denied, broken]) {
+      const { warns, errors } = await logsOfOneFailingTick(failure);
+      expect(warns).toEqual([]);
+      expect(errors).toEqual([["ingest poll failed:", failure]]);
     }
   });
 });
