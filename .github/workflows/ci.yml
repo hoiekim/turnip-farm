@@ -68,6 +68,83 @@ jobs:
       - name: Build
         run: bun run build
 
+  # The HTTP conformance suite (conformance/README.md): the same tests
+  # against the Bun backend and, once PR 2 lands it, the Rust backend.
+  # The Rust leg is gated until the Rust binary exists (see run.ts): with
+  # no Cargo.toml the suite runs Bun-only, and the cargo steps below are
+  # skipped, so this job is green on the suite-only PR.
+  conformance:
+    runs-on: ubuntu-latest
+    # Dates are read and written in the server's local time: run in a zone
+    # with daylight saving as well as in UTC. (The farm buckets stats in
+    # UTC explicitly, but the Rust port must prove it everywhere else.)
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        tz: [UTC, America/Los_Angeles]
+    env:
+      TZ: ${{ matrix.tz }}
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+POSTGRES_PASSWORD: <redacted>
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # Every started server keeps a pool, and the two backends are tested
+      # at the same time.
+      - name: Raise the Postgres connection limit
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -c "ALTER SYSTEM SET max_connections = 400"
+          docker restart ${{ job.services.postgres.id }}
+          until docker exec ${{ job.services.postgres.id }} pg_isready -U postgres; do sleep 1; done
+
+      # Kept out of the repo's `typecheck`, which the Docker build runs
+      # without the conformance suite.
+      - name: Typecheck the conformance suite
+        if: matrix.tz == 'UTC'
+        run: bun run typecheck:conformance
+
+      # Gated until the Rust PR lands Cargo.toml; without it there is
+      # nothing to lint or test, and the job must stay green.
+      - name: Setup Rust
+        if: hashFiles('Cargo.toml') != ''
+        run: rustup toolchain install
+
+      - name: Clippy
+        if: matrix.tz == 'UTC' && hashFiles('Cargo.toml') != ''
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust unit tests
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test
+
+      # run.ts builds the Bun bundle + client itself, so no separate build
+      # step is needed. `bun install --frozen-lockfile` provides the
+      # `dbmate` binary the harness invokes.
+      - name: Conformance suite
+        run: bun conformance/run.ts --tz "$TZ"
+
   # Builds the production image without pushing it, so a broken Dockerfile
   # fails the PR instead of CD after merge. CD runs only once CI passes.
   image:

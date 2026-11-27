@@ -4,6 +4,9 @@ node_modules/
 # build output
 build/
 
+# conformance run artifacts: per-run transcripts, rewritten every run
+conformance/.transcripts/
+
 # dbmate schema dump; bare `dbmate migrate` writes it, `bun run db:migrate`
 # doesn't (pg_dump output varies by client version)
 db/schema.sql

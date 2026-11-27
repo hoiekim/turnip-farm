@@ -14,7 +14,7 @@
     "start": "bun run build && bun run start-server",
     "start-server": "bun ./build/server/bundle.js",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test src db",
     "db:migrate": "dbmate --no-dump-schema migrate",
     "db:rollback": "dbmate --no-dump-schema rollback",
     "db:status": "dbmate status",
@@ -26,7 +26,13 @@
     "labels:synonyms": "bun scripts/label-synonyms.ts",
     "labels:merge": "bun scripts/merge-labels.ts",
     "segments:purge-blobs": "bun scripts/purge-segment-blobs.ts",
-    "sources:holdout": "bun scripts/source-holdout.ts"
+    "sources:holdout": "bun scripts/source-holdout.ts",
+    "test:conformance": "bun conformance/run.ts",
+    "test:conformance:bun": "bun conformance/run.ts --target bun",
+    "test:conformance:rust": "bun conformance/run.ts --target rust",
+    "build-server-rust": "cargo build --release --bin turnip-farm-server && mkdir -p build/server-rust && cp target/release/turnip-farm-server build/server-rust/turnip-farm-server",
+    "start-server-rust": "CLIENT_DIR=build/client ./build/server-rust/turnip-farm-server",
+    "typecheck:conformance": "tsc --noEmit -p conformance"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
