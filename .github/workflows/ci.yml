@@ -90,7 +90,7 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-POSTGRES_PASSWORD: <redacted>
+          POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
