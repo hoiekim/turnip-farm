@@ -11,7 +11,7 @@ describe("sources", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   /** A consented client for a fresh user. */
   const setup = async () => {

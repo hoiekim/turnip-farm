@@ -142,7 +142,9 @@ describe("retention", () => {
       const forms = stack.upstream.apple.revokeForms();
       expect(forms).toHaveLength(1);
       expect(forms[0]!.token).toBe(stack.upstream.apple.refreshTokenFor(sub)!);
-      await stack.waitForLog("idle accounts: 1 deleted, 0 failed");
+      // The line was logged by the restart's startup retention: wait for
+      // the first occurrence, not one more (the no-count default).
+      await stack.waitForLog("idle accounts: 1 deleted, 0 failed", { count: 1 });
     } finally {
       await stack.stop();
     }
@@ -156,7 +158,10 @@ describe("retention", () => {
       stack.upstream.apple.state.revoke = () => new Response(null, { status: 500 });
       await stack.restart();
       expect(await count(stack, "users", `WHERE id = '${userId}'`)).toBe(1);
-      await stack.waitForLog("idle accounts: 0 deleted, 1 failed");
+      // The line was logged by the restart's startup retention, so this
+      // waits for the first occurrence — not one more, which is the
+      // no-count default (stack.ts waitForLog).
+      await stack.waitForLog("idle accounts: 0 deleted, 1 failed", { count: 1 });
       stack.upstream.apple.state.revoke = () => new Response(null, { status: 200 });
       await stack.restart();
       expect(await count(stack, "users", `WHERE id = '${userId}'`)).toBe(0);

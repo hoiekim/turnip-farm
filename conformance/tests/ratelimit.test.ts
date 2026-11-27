@@ -11,8 +11,8 @@ describe("rate limits", () => {
     adminStack = await startStack({ admin: true });
   });
   afterAll(async () => {
-    await stack.stop();
-    await adminStack.stop();
+    await stack?.stop();
+    await adminStack?.stop();
   });
 
   const rateLimited = (result: { status: number; json: unknown; headers: Headers }) => {

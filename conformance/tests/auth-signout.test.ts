@@ -9,7 +9,7 @@ describe("auth-signout", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   test("204 with a valid token, and the session row is gone", async () => {
     const { client, token } = await seedSession(stack, randomSub());

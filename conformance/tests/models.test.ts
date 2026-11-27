@@ -11,7 +11,7 @@ describe("models", () => {
   beforeEach(async () => {
     stack = await startStack();
   });
-  afterEach(() => stack.stop());
+  afterEach(() => stack?.stop());
 
   const publishBody = async (overrides: Record<string, unknown> = {}) => ({
     version: "trick-v1",

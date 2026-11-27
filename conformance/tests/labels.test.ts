@@ -8,7 +8,7 @@ describe("labels", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   const setup = async (withConsent = true) => {
     const { client, userId } = await seedSession(stack, randomSub());

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { startExpectingFailure } from "../harness/boot";
+import { REPO_ROOT, serverCommand } from "../harness/config";
+import { serverPort } from "../harness/ports";
+import { validFarmEnv } from "../harness/stack";
 
 // The 11 required variables, as listed in src/config.ts REQUIRED_ENV.
 // Hardcoded here on purpose: the test pins the contract, it does not read
@@ -97,4 +100,75 @@ describe("boot", () => {
     const output = await invalid({ TRUSTED_PROXIES: "10.0.0.0/8, not-an-ip" });
     expect(output).toContain('  - TRUSTED_PROXIES entry "not-an-ip" is not an IP address or CIDR range');
   });
+
+  /**
+   * Spawns the real server with the given env overrides; the caller owns
+   * the child and must stop it. The database named does not exist, so a
+   * server that wrongly gets past its settings cannot touch anything —
+   * and the server starts anyway: the startup retention only logs a
+   * database it cannot reach.
+   */
+  const spawnServer = async (env: Record<string, string | undefined>) => {
+    const port = await serverPort();
+    const full: Record<string, string | undefined> = {
+      ...(await validFarmEnv("conformance_never_created")),
+      PORT: String(port),
+      ...env,
+    };
+    const cleaned: Record<string, string> = {};
+    for (const [key, value] of Object.entries(full)) if (value !== undefined) cleaned[key] = value;
+    const child = Bun.spawn({
+      cmd: serverCommand(),
+      cwd: REPO_ROOT,
+      env: cleaned,
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]).then(
+      ([out, err]) => out + err,
+    );
+    return { child, port, output };
+  };
+
+  const waitHealthy = async (port: number) => {
+    for (let i = 0; i < 100; i++) {
+      const up = await fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok, () => false);
+      if (up) return;
+      await Bun.sleep(50);
+    }
+    throw new Error(`server on ${port} never became healthy`);
+  };
+
+  test("SIGTERM shuts down cleanly: exit 0 and the shutting-down line", async () => {
+    const { child, port, output } = await spawnServer({});
+    try {
+      await waitHealthy(port);
+      child.kill("SIGTERM");
+      expect(await child.exited).toBe(0);
+      expect(child.signalCode).toBeNull();
+      expect(await output).toContain("turnip-farm shutting down");
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  test("an unreachable database still starts and answers /healthz", async () => {
+    const { child, port, output } = await spawnServer({
+      DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:1/conformance_never_created?sslmode=disable",
+    });
+    try {
+      await waitHealthy(port);
+      const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "ok" });
+      child.kill("SIGTERM");
+      expect(await child.exited).toBe(0);
+      // The startup retention only logs the unreachable database; the
+      // server listened anyway, and still shut down cleanly.
+      expect(await output).toContain("turnip-farm listening on");
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 30_000);
 });

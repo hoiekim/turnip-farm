@@ -7,7 +7,7 @@ describe("static", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   test("GET / serves index.html", async () => {
     const result = await stack.anonymous().get("//");

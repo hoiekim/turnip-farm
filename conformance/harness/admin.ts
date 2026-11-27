@@ -30,12 +30,13 @@ export const startAdminLogin = async (
 };
 
 /**
- * Finishes the login: follows the authorize URL through the fake (its
- * origin rewritten to the fake's local port), then GETs the farm's
- * /auth/callback with the login cookie. Returns the client carrying the
- * admin session cookie.
+ * Follows the authorize URL through the fake (its origin rewritten to
+ * the fake's local port), then GETs the farm's /auth/callback with the
+ * login cookie. Returns the callback's raw answer, so a test can assert
+ * the failure redirect itself instead of only noticing that no session
+ * cookie was set.
  */
-export const finishAdminLogin = async (stack: Stack, client: ApiClient, authorizeUrl: string): Promise<ApiClient> => {
+export const callbackAdminLogin = async (stack: Stack, client: ApiClient, authorizeUrl: string) => {
   const authorize = new URL(authorizeUrl);
   authorize.protocol = "http:";
   authorize.host = `127.0.0.1:${stack.upstream.auth.port}`;
@@ -45,7 +46,17 @@ export const finishAdminLogin = async (stack: Stack, client: ApiClient, authoriz
   }
   const callback = new URL(authResponse.headers.get("location") ?? "");
   // The callback is on the farm's own origin; the path + query carry the code and state.
-  const result = await client.get(`//auth/callback${callback.search}`);
+  return client.get(`//auth/callback${callback.search}`);
+};
+
+/**
+ * Finishes the login: follows the authorize URL through the fake (its
+ * origin rewritten to the fake's local port), then GETs the farm's
+ * /auth/callback with the login cookie. Returns the client carrying the
+ * admin session cookie.
+ */
+export const finishAdminLogin = async (stack: Stack, client: ApiClient, authorizeUrl: string): Promise<ApiClient> => {
+  const result = await callbackAdminLogin(stack, client, authorizeUrl);
   if (result.status !== 302) throw new Error(`GET /auth/callback answered ${result.status}: ${result.text}`);
   if (!client.cookies.has(ADMIN_COOKIE)) throw new Error("callback set no admin session cookie");
   return client;

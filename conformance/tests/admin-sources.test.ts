@@ -17,7 +17,7 @@ describe("admin sources", () => {
     admin = seeded.client;
     adminToken = seeded.token;
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   const originHeaders = () => ({ Origin: stack.anonymous().origin });
 
@@ -135,9 +135,8 @@ describe("admin sources", () => {
       expect(typeof page1.body.next_cursor).toBe("string");
       // Newest first: the last-seeded source is first.
       expect(sources1[0]!.id).toBe(ids[50]);
+      // The cursor is opaque: round-trip it verbatim, never decode it.
       const cursor = page1.body.next_cursor as string;
-      const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as [string, string];
-      expect(decoded[1]).toBe(sources1[49]!.id);
       const page2 = await admin.get("//api/admin/sources", { query: { cursor } });
       const sources2 = page2.body.sources as { id: string }[];
       // The second page holds the oldest of the 51 plus the sources earlier
@@ -145,8 +144,10 @@ describe("admin sources", () => {
       expect(sources2.map((s) => s.id)).toContain(ids[0]);
       expect(page2.body.next_cursor).toBeNull();
       // The two pages together hold exactly the 51 seeded sources (plus any
-      // this file seeded earlier — filter to the ones this test made).
+      // this file seeded earlier — filter to the ones this test made), with
+      // no row repeated across the pages.
       const pageIds = [...sources1, ...sources2].map((s) => s.id);
+      expect(new Set(pageIds).size).toBe(pageIds.length);
       for (const id of ids) expect(pageIds).toContain(id);
     });
   });
@@ -162,15 +163,32 @@ describe("admin sources", () => {
     });
 
     test("PUT sets holdout, DELETE clears it; changed is false the second time; updated_at moves", async () => {
-      const { sourceId } = await setupSource({ holdout: false });
+      const { sourceId } = await setupSource({ holdout: false, labels: [{ name: "cork", origin: "typed" }] });
+      // Backdate the row an hour so the PUT must move updated_at to pass:
+      // a server that never touched it would leave the old timestamp.
+      const hourAgo = "now() - interval '1 hour'";
+      await stack.db.query(`UPDATE sources SET updated_at = ${hourAgo} WHERE id = $1`, [sourceId]);
+      await stack.db.query(`UPDATE clips SET updated_at = ${hourAgo} WHERE source_id = $1`, [sourceId]);
+      await stack.db.query(
+        `UPDATE labels SET updated_at = ${hourAgo} WHERE clip_id IN (SELECT id FROM clips WHERE source_id = $1)`,
+        [sourceId],
+      );
       const before = await stack.db.one<{ updated_at: Date }>(`SELECT updated_at FROM sources WHERE id = $1`, [sourceId]);
+      // The export cursor taken before the PUT: the row must reappear past
+      // it once the PUT moves updated_at to now.
+      const exportBefore = await stack.pipeline().get("/labels/export");
+      const cursorBefore = exportBefore.body.next_cursor as string;
+      expect(typeof cursorBefore).toBe("string");
       const put = await admin.put(`//api/admin/sources/${sourceId}/holdout`, {}, { headers: originHeaders() });
       expect(put.status).toBe(200);
       expect(put.body).toEqual({ source_id: sourceId, holdout: true, changed: true });
       expect(put.headers.get("cache-control")).toBe("no-store");
       const afterPut = await stack.db.one<{ updated_at: Date; holdout: boolean }>(`SELECT updated_at, holdout FROM sources WHERE id = $1`, [sourceId]);
       expect(afterPut!.holdout).toBe(true);
-      expect(afterPut!.updated_at.getTime()).toBeGreaterThanOrEqual(before!.updated_at.getTime());
+      expect(afterPut!.updated_at.getTime()).toBeGreaterThan(before!.updated_at.getTime());
+      const exportAfter = await stack.pipeline().get("/labels/export", { query: { since: cursorBefore } });
+      const rowsAfter = exportAfter.body.rows as { source_id: string }[];
+      expect(rowsAfter.map((r) => r.source_id)).toContain(sourceId);
       const putAgain = await admin.put(`//api/admin/sources/${sourceId}/holdout`, {}, { headers: originHeaders() });
       expect(putAgain.body).toEqual({ source_id: sourceId, holdout: true, changed: false });
       const del = await admin.delete(`//api/admin/sources/${sourceId}/holdout`, { headers: originHeaders() });

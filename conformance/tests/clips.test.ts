@@ -10,7 +10,7 @@ describe("clips", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   /** A consented client plus an ingested 100-frame source. */
   const setup = async (frameCount = 100) => {

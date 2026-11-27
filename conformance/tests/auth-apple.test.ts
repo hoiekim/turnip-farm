@@ -12,7 +12,7 @@ describe("auth-apple", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   /** Posts a sign-in attempt without asserting success. */
   const attempt = (body: unknown, forwardedFor = nextAddress()) =>

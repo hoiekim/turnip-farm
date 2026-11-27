@@ -172,4 +172,6 @@ tests assert the code and the PR notes both.
 - The untrusted-peer `X-Forwarded-For` branch is untestable over HTTP
   (unit-test only).
 - The `GET /api/stats` midnight-UTC straddle can diff between parallel
-  targets; accepted, same as budget.
+  targets; accepted on its own merits: the two targets run in parallel
+  with the window anchored at now, so a run straddling UTC midnight can
+  place a row on different days on each target.

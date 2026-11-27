@@ -9,7 +9,7 @@ describe("reports", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   test("401 anonymous, 403 blocked; consent is NOT required", async () => {
     const anon = await stack.anonymous().post("/reports", {

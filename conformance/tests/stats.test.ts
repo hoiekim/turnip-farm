@@ -12,7 +12,7 @@ describe("stats", () => {
   beforeEach(async () => {
     stack = await startStack();
   });
-  afterEach(() => stack.stop());
+  afterEach(() => stack?.stop());
 
   /** Seeds `n` users, each with one source + one clip + one label, today. */
   const seedCommunity = async (n: number, options: { quarantineOne?: boolean } = {}) => {

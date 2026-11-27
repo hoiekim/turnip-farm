@@ -13,7 +13,7 @@ describe("schema", () => {
     );
     await stack.db.query(`INSERT INTO clips (source_id, start_frame, end_frame) VALUES ($1, 0, 10)`, ["e".repeat(64)]);
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   test("all 16 migrations are applied", async () => {
     const rows = await stack.db.query<{ version: string }>(`SELECT version FROM schema_migrations ORDER BY version`, []);

@@ -21,7 +21,7 @@ describe("export", () => {
   beforeEach(async () => {
     stack = await startStack();
   });
-  afterEach(() => stack.stop());
+  afterEach(() => stack?.stop());
 
   /** An ingested source attributed to a fresh user, with one clip + labels. */
   const setupExport = async (options: {
@@ -170,11 +170,8 @@ describe("export", () => {
     expect(rows1.map((r) => r.trick_name)).toEqual(["cork", "gainer", "hook"]);
     const cursor = page1.body.next_cursor as string;
     expect(typeof cursor).toBe("string");
-    // The cursor is the last row's triple, base64url JSON.
-    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as [string, string, string];
-    expect(decoded[0]).toBe("2026-01-02T00:00:02.000000Z");
-    expect(decoded[1]).toBe(third.clipId);
-    expect(decoded[2]).toBe("hook");
+    // The cursor is opaque: round-trip it verbatim, never decode it.
+    // Past the last row it yields an empty page with a null cursor.
     const page2 = await stack.pipeline().get("/labels/export", { query: { since: cursor } });
     expect(page2.body).toEqual({
       rows: [],

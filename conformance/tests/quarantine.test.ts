@@ -10,7 +10,7 @@ describe("quarantine", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   const setupSource = async () => {
     const { userId } = await seedSession(stack, randomSub());

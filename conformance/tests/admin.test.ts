@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { ADMIN_COOKIE, LOGIN_COOKIE, adminLogin, finishAdminLogin, postAuthEvent, seedAdminSession, startAdminLogin } from "../harness/admin";
+import { ADMIN_COOKIE, LOGIN_COOKIE, adminLogin, callbackAdminLogin, postAuthEvent, seedAdminSession, startAdminLogin } from "../harness/admin";
 import { nextAddress } from "../harness/apple";
 import { startStack, type Stack } from "../harness/stack";
 import { sha256Hex } from "../harness/tkp1";
@@ -9,7 +9,7 @@ describe("admin auth", () => {
   beforeAll(async () => {
     stack = await startStack({ admin: true });
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   // The admin bucket is 60/min per IP; give the bulkier direct calls their
   // own address so the login-flow tests never trip it.
@@ -20,7 +20,7 @@ describe("admin auth", () => {
     beforeAll(async () => {
       off = await startStack();
     });
-    afterAll(() => off.stop());
+    afterAll(() => off?.stop());
 
     test("without AUTH_* every /api/admin/* and /auth/* route is 404, as if it did not exist", async () => {
       for (const path of ["//api/admin/sources", "//api/admin/synonyms", "//auth/login", "//auth/callback", "//auth/events"]) {
@@ -110,13 +110,10 @@ describe("admin auth", () => {
       stack.upstream.auth.state.role = "viewer";
       try {
         const { client, authorizeUrl } = await startAdminLogin(stack);
-        const signedIn = await finishAdminLogin(stack, client, authorizeUrl);
-        // finishAdminLogin throws when no session cookie is set; the
-        // callback itself answered 302 to /admin?signin=forbidden.
-        void signedIn;
-        expect.unreachable();
-      } catch (err) {
-        expect(String(err)).toContain("callback set no admin session cookie");
+        const result = await callbackAdminLogin(stack, client, authorizeUrl);
+        expect(result.status).toBe(302);
+        expect(result.headers.get("location")).toBe("/admin?signin=forbidden");
+        expect(client.cookies.has(ADMIN_COOKIE)).toBe(false);
       } finally {
         stack.upstream.auth.state.role = "admin";
       }
@@ -131,10 +128,10 @@ describe("admin auth", () => {
       stack.upstream.auth.state.amr = [];
       try {
         const { client, authorizeUrl } = await startAdminLogin(stack);
-        await finishAdminLogin(stack, client, authorizeUrl);
-        expect.unreachable();
-      } catch (err) {
-        expect(String(err)).toContain("callback set no admin session cookie");
+        const result = await callbackAdminLogin(stack, client, authorizeUrl);
+        expect(result.status).toBe(302);
+        expect(result.headers.get("location")).toBe("/admin?signin=mfa_required");
+        expect(client.cookies.has(ADMIN_COOKIE)).toBe(false);
       } finally {
         stack.upstream.auth.state.amr = ["mfa"];
       }
@@ -156,14 +153,23 @@ describe("admin auth", () => {
       }
     });
 
+    test("a provider error at the callback is /admin?signin=failed", async () => {
+      const { client, authorizeUrl } = await startAdminLogin(stack);
+      const state = new URL(authorizeUrl).searchParams.get("state");
+      const result = await client.get(`//auth/callback?error=access_denied&state=${state}`);
+      expect(result.status).toBe(302);
+      expect(result.headers.get("location")).toBe("/admin?signin=failed");
+      expect(client.cookies.has(ADMIN_COOKIE)).toBe(false);
+    });
+
     test("an auth_time older than max_age is /admin?signin=failed", async () => {
       stack.upstream.auth.state.authTimeAgeSec = 90000;
       try {
         const { client, authorizeUrl } = await startAdminLogin(stack);
-        await finishAdminLogin(stack, client, authorizeUrl);
-        expect.unreachable();
-      } catch (err) {
-        expect(String(err)).toContain("callback set no admin session cookie");
+        const result = await callbackAdminLogin(stack, client, authorizeUrl);
+        expect(result.status).toBe(302);
+        expect(result.headers.get("location")).toBe("/admin?signin=failed");
+        expect(client.cookies.has(ADMIN_COOKIE)).toBe(false);
       } finally {
         stack.upstream.auth.state.authTimeAgeSec = 0;
       }
@@ -191,6 +197,28 @@ describe("admin auth", () => {
       const expired = await seedAdminSession(stack, { expiresInSec: -60 });
       const expiredResult = await expired.client.get("//api/admin/sources", { headers: { "X-Forwarded-For": address } });
       expect(expiredResult.status).toBe(401);
+    });
+
+    test("GET /api/admin/session answers 200 {username, role} for a signed-in admin", async () => {
+      const { client } = await seedAdminSession(stack, {});
+      const result = await client.get("//api/admin/session", { headers: { "X-Forwarded-For": nextAddress() } });
+      expect(result.status).toBe(200);
+      expect(result.body).toEqual({ username: "maintainer", role: "admin" });
+      expect(result.headers.get("cache-control")).toBe("no-store");
+    });
+
+    test("GET /api/admin/session is 401 with no cookie or an unknown token", async () => {
+      const expected = {
+        error: { code: "UNAUTHENTICATED", message: "Sign in at /auth/login", details: {} },
+      };
+      const noCookie = await stack.anonymous().get("//api/admin/session", { headers: { "X-Forwarded-For": nextAddress() } });
+      expect(noCookie.status).toBe(401);
+      expect(noCookie.json).toEqual(expected);
+      const unknown = stack.anonymous();
+      unknown.cookies.set(ADMIN_COOKIE, "A".repeat(43));
+      const unknownResult = await unknown.get("//api/admin/session", { headers: { "X-Forwarded-For": nextAddress() } });
+      expect(unknownResult.status).toBe(401);
+      expect(unknownResult.json).toEqual(expected);
     });
 
     test("a stored non-admin role is 401", async () => {

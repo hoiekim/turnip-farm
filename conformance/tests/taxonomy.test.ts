@@ -11,7 +11,7 @@ describe("taxonomy", () => {
   beforeEach(async () => {
     stack = await startStack();
   });
-  afterEach(() => stack.stop());
+  afterEach(() => stack?.stop());
 
   test("public: the v1 vocabulary, with ETag and Cache-Control", async () => {
     const result = await stack.anonymous().get("/taxonomy/current");

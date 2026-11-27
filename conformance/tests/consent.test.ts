@@ -14,7 +14,7 @@ describe("consent", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   test("401 anonymous", async () => {
     const result = await stack.anonymous().post("/consent", {

@@ -6,7 +6,7 @@ describe("health", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   test("GET /healthz answers {status: ok} with no auth, no cookies, no rate limit", async () => {
     // Hammer it past the public bucket: /healthz is not in any bucket.

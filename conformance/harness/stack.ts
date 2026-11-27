@@ -236,7 +236,7 @@ export class Stack {
 
   /** Resolves once `count` log lines contain `text` (by default, once one more than now does). */
   async waitForLog(text: string, { count, timeoutMs = 30_000 }: { count?: number; timeoutMs?: number } = {}): Promise<void> {
-    const target = count ?? Math.max(1, this.logCount(text));
+    const target = count ?? this.logCount(text) + 1;
     const deadline = Date.now() + timeoutMs;
     while (this.logCount(text) < target) {
       if (Date.now() > deadline) {

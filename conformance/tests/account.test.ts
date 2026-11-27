@@ -9,7 +9,7 @@ describe("account", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   /** Seeds a full account through the API + SQL, the way the unit-test helper does. */
   const seedAccount = async (sub: string) => {

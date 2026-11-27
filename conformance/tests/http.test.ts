@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomSub, signIn } from "../harness/apple";
 import { startStack, type Stack } from "../harness/stack";
 
 describe("http", () => {
@@ -6,7 +7,24 @@ describe("http", () => {
   beforeAll(async () => {
     stack = await startStack({});
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
+
+  test("a malformed, array, or empty JSON body on an object POST is 422 VALIDATION_ERROR", async () => {
+    // POST /api/reports needs an object body (readJsonObject returns null
+    // otherwise); auth runs first, so this drives it signed in.
+    const { client } = await signIn(stack, randomSub());
+    const expected = {
+      error: { code: "VALIDATION_ERROR", message: "body must be a JSON object", details: {} },
+    };
+    for (const rawBody of ["not json", "[1, 2]", ""]) {
+      const result = await client.request("POST", "/reports", {
+        rawBody,
+        headers: { "Content-Type": "application/json" },
+      });
+      expect(result.status).toBe(422);
+      expect(result.json).toEqual(expected);
+    }
+  });
 
   test("a body over 1 MiB on a 1 MiB route is Bun's bare 413: empty body, connection closed", async () => {
     // Bun.serve's maxRequestBodySize is the largest route cap (1 MiB), so

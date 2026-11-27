@@ -11,7 +11,7 @@ describe("auth-notifications", () => {
   beforeAll(async () => {
     stack = await startStack();
   });
-  afterAll(() => stack.stop());
+  afterAll(() => stack?.stop());
 
   const notify = (payload: unknown, forwardedFor = nextAddress()) =>
     stack.anonymous().post("/auth/apple/notifications", { payload }, { headers: { "X-Forwarded-For": forwardedFor } });

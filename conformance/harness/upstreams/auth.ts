@@ -1,6 +1,6 @@
 /**
- * A fake OIDC auth service for the admin sign-in, adapted from budget's
- * FakeIssuer: discovery, an Ed25519 key set, and token / revocation /
+ * A fake OIDC auth service for the admin sign-in: discovery, an Ed25519
+ * key set, and token / revocation /
  * end-session endpoints whose answers a test replaces through `state`.
  * Tokens name the `https` issuer; the server reaches this fake over plain
  * HTTP through `AUTH_BACKCHANNEL_URL`, and the test drives the authorize
